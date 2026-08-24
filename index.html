@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>ポカヨケ照合システム (完全座標一致・高精度OCR版)</title>
+  <title>ポカヨケ照合システム (キーボード制御版)</title>
   <script src="https://unpkg.com/html5-qrcode"></script>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <style>
@@ -98,7 +98,6 @@
       color: #b78103;
     }
 
-    /* カメラ表示枠（4:3比率固定） */
     .camera-container {
       position: relative;
       width: 100%;
@@ -127,7 +126,6 @@
       object-fit: fill;
     }
 
-    /* OCRターゲット枠 */
     .ocr-scan-box {
       position: absolute;
       top: 50%;
@@ -358,7 +356,7 @@
 
     <div class="card input-section">
       <div class="input-row">
-        <input type="text" id="scanInput" placeholder="スキャナ読取 / 手入力" autofocus autocomplete="off">
+        <input type="text" id="scanInput" placeholder="スキャナ読取 / 手入力" autocomplete="off">
         <button class="btn btn-primary" onclick="handleManualInput()">確定</button>
       </div>
       <div class="input-row">
@@ -472,11 +470,20 @@
       }
     });
 
+    // ★ キーボード抑制制御（カメラ起動中はフォーカスを外してキーボードを出さない） ★
     function keepFocus() {
-      if (document.getElementById('settingModal').style.display !== 'flex' &&
-          document.getElementById('logModal').style.display !== 'flex' &&
-          document.getElementById('cameraBox').style.display !== 'block') {
-        scanInput.focus();
+      const isCameraActive = document.getElementById('cameraBox').style.display === 'block';
+      const isSettingOpen = document.getElementById('settingModal').style.display === 'flex';
+      const isLogOpen = document.getElementById('logModal').style.display === 'flex';
+
+      if (isCameraActive) {
+        // カメラが起動している時はフォーカスを外してキーボードを完全に閉じる
+        if (document.activeElement === scanInput) {
+          scanInput.blur();
+        }
+      } else if (!isSettingOpen && !isLogOpen) {
+        // カメラ停止時かつPC/外付けリーダー用の時のみフォーカス
+        // モバイルで直接タップされた時以外は無理にフォーカスを奪わない
       }
     }
     document.addEventListener('click', keepFocus);
@@ -677,6 +684,7 @@
     // --- バーコード/QR ---
     async function startLiveBarcodeScan() {
       await stopAllCameras();
+      scanInput.blur(); // キーボードを閉じる
       currentCameraMode = 'QR';
 
       const cameraBox = document.getElementById('cameraBox');
@@ -712,7 +720,7 @@
       });
     }
 
-    // --- 大津の自動二値化（動的しきい値算出） ---
+    // --- 大津の自動二値化 ---
     function getOtsuThreshold(grayData) {
       const hist = new Array(256).fill(0);
       const total = grayData.length;
@@ -746,20 +754,21 @@
       return threshold;
     }
 
-    // --- OCR (高精度パラメータ＆動的二値化) ---
+    // --- OCR ---
     async function initOcrWorker() {
       if (!ocrWorker) {
         document.getElementById('statusBanner').textContent = 'OCRエンジンを準備中...';
         ocrWorker = await Tesseract.createWorker('eng');
         await ocrWorker.setParameters({
           tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_',
-          tessedit_pageseg_mode: '7' // 単一行モード
+          tessedit_pageseg_mode: '7'
         });
       }
     }
 
     async function startLiveOCRScan() {
       await stopAllCameras();
+      scanInput.blur(); // キーボードを閉じる
       currentCameraMode = 'OCR';
 
       const cameraBox = document.getElementById('cameraBox');
@@ -971,7 +980,6 @@
       const savedUrl = localStorage.getItem('pokayoke_gdrive_url');
       if (savedUrl) document.getElementById('gdriveUrl').value = savedUrl;
       updateUI();
-      keepFocus();
     };
   </script>
 </body>
