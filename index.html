@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>ポカヨケ照合システム (連続スキャン版)</title>
+  <title>ポカヨケ照合システム (座標同期版)</title>
   <script src="https://unpkg.com/html5-qrcode"></script>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <style>
@@ -98,12 +98,13 @@
       color: #b78103;
     }
 
+    /* カメラ表示コンテナ */
     .camera-container {
       position: relative;
       width: 100%;
       max-width: 480px;
       margin: 0 auto;
-      aspect-ratio: 16 / 9;
+      height: 200px;
       background: #000;
       border-radius: 8px;
       overflow: hidden;
@@ -126,22 +127,24 @@
       object-fit: cover;
     }
 
+    /* OCRターゲット枠（中央固定） */
     .ocr-scan-box {
       position: absolute;
       top: 50%;
       left: 50%;
       transform: translate(-50%, -50%);
-      width: 80%;
-      height: 60px;
+      width: 75%;
+      height: 55px;
       border: 2px dashed #00e676;
-      border-radius: 8px;
-      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.5);
+      border-radius: 6px;
+      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.45);
       pointer-events: none;
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
       gap: 2px;
+      z-index: 10;
     }
     .ocr-scan-box span {
       color: #00e676;
@@ -391,7 +394,6 @@
     let currentChildItems = [];
     let currentCameraMode = null;
 
-    // スキャン制御フラグ（連続スキャン用クールダウン制御）
     let isCoolDown = false;
     let lastScannedCode = '';
     let lastScannedTime = 0;
@@ -462,13 +464,12 @@
       scanInput.value = '';
     }
 
-    // --- 照合ロジック（連続読み取り対応） ---
+    // --- 照合ロジック ---
     function processScan(code) {
       code = code.trim();
       if (!code) return;
 
       const now = Date.now();
-      // 同一コードのチャタリング防止（1.5秒以内の同一コード連続検知を抑制）
       if (isCoolDown || (code === lastScannedCode && (now - lastScannedTime < 1500))) {
         return;
       }
@@ -481,8 +482,6 @@
           notifyOK();
           updateUI();
           addLog(currentParent, '-', '親品番読取OK');
-
-          // クールダウン設定後、カメラを止めずに継続
           setScanCoolDown(code);
         } else {
           notifyNG();
@@ -522,14 +521,13 @@
       }
     }
 
-    // スキャン後のクールダウン制御（カメラを止めずに次を読み取る）
     function setScanCoolDown(code) {
       isCoolDown = true;
       lastScannedCode = code;
       lastScannedTime = Date.now();
       setTimeout(() => {
         isCoolDown = false;
-      }, 1000); // 1秒後に次のスキャン可能
+      }, 1000);
     }
 
     function updateUI() {
@@ -653,7 +651,7 @@
       keepFocus();
     }
 
-    // --- リアルタイム バーコード/QR（連続読み取り） ---
+    // --- リアルタイム バーコード/QR ---
     async function startLiveBarcodeScan() {
       await stopAllCameras();
       currentCameraMode = 'QR';
@@ -683,7 +681,6 @@
           aspectRatio: 1.777778
         },
         (decodedText) => {
-          // 連続して読取処理へ
           processScan(decodedText);
         },
         () => {}
@@ -693,7 +690,7 @@
       });
     }
 
-    // --- リアルタイム OCR（連続フレーム解析） ---
+    // --- リアルタイム OCR (画面枠と完全座標同期) ---
     async function initOcrWorker() {
       if (!ocrWorker) {
         document.getElementById('statusBanner').textContent = 'OCRエンジンを準備中...';
@@ -731,39 +728,63 @@
         await initOcrWorker();
         document.getElementById('statusBanner').textContent = '緑枠内に文字を合わせてください (連続読取中)';
 
-        // 0.5秒間隔でフレームを継続解析
-        ocrTimer = setInterval(captureAndRecognizeFrame, 500);
+        ocrTimer = setInterval(captureAndRecognizeFrame, 450);
       } catch (err) {
         alert('OCRカメラの起動に失敗しました。カメラ権限を確認してください。');
         stopAllCameras();
       }
     }
 
+    // ★ 画面上の緑枠とカメラ映像のピクセルを1対1で完全座標変換してクロップ ★
     async function captureAndRecognizeFrame() {
       if (isOcrProcessing || !ocrStream || isCoolDown) return;
 
       const video = document.getElementById('ocrVideo');
+      const scanBox = document.getElementById('ocrScanBox');
       const canvas = document.getElementById('ocrCanvas');
-      if (!video || video.videoWidth === 0) return;
+      if (!video || video.videoWidth === 0 || video.clientHeight === 0) return;
 
       isOcrProcessing = true;
 
-      const cropW = Math.floor(video.videoWidth * 0.8);
-      const cropH = Math.floor(video.videoHeight * 0.25);
-      const startX = Math.floor((video.videoWidth - cropW) / 2);
-      const startY = Math.floor((video.videoHeight - cropH) / 2);
+      // 1. ビデオ要素と緑枠のDOM上の位置・サイズを取得
+      const videoRect = video.getBoundingClientRect();
+      const boxRect = scanBox.getBoundingClientRect();
 
-      canvas.width = cropW;
-      canvas.height = cropH;
+      // 2. object-fit: cover による拡大比率とオフセットを算出
+      const scale = Math.max(videoRect.width / video.videoWidth, videoRect.height / video.videoHeight);
+      const renderedWidth = video.videoWidth * scale;
+      const renderedHeight = video.videoHeight * scale;
+      const offsetX = (videoRect.width - renderedWidth) / 2;
+      const offsetY = (videoRect.height - renderedHeight) / 2;
+
+      // 3. 画面上の緑枠の矩形をビデオ本来のピクセル座標系へ逆変換
+      let cropX = (boxRect.left - videoRect.left - offsetX) / scale;
+      let cropY = (boxRect.top - videoRect.top - offsetY) / scale;
+      let cropWidth = boxRect.width / scale;
+      let cropHeight = boxRect.height / scale;
+
+      // 境界値クランプ（画面外はみ出し防止）
+      cropX = Math.max(0, Math.min(cropX, video.videoWidth - cropWidth));
+      cropY = Math.max(0, Math.min(cropY, video.videoHeight - cropHeight));
+
+      // 4. OCR認識率向上のため2倍解像度でキャンバスに描画
+      const scaleFactor = 2;
+      canvas.width = Math.floor(cropWidth * scaleFactor);
+      canvas.height = Math.floor(cropHeight * scaleFactor);
       const ctx = canvas.getContext('2d');
 
-      ctx.drawImage(video, startX, startY, cropW, cropH, 0, 0, cropW, cropH);
+      ctx.drawImage(
+        video,
+        cropX, cropY, cropWidth, cropHeight,
+        0, 0, canvas.width, canvas.height
+      );
 
-      const imgData = ctx.getImageData(0, 0, cropW, cropH);
+      // 5. 二値化フィルター（白黒コントラスト強調）
+      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
       const d = imgData.data;
       for (let i = 0; i < d.length; i += 4) {
-        const v = 0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2];
-        const b = (v > 125) ? 255 : 0;
+        const gray = 0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2];
+        const b = gray > 120 ? 255 : 0;
         d[i] = b;
         d[i+1] = b;
         d[i+2] = b;
@@ -788,11 +809,11 @@
       } catch (e) {
         console.error('OCR Process Error:', e);
       } finally {
-        isOcrProcessing = false; // 次のフレーム解析を必ず解放
+        isOcrProcessing = false;
       }
     }
 
-    // --- CSV読み込み (Shift-JIS / UTF-8) ---
+    // --- CSV読み込み ---
     document.getElementById('csvFileInput').addEventListener('change', function(e) {
       const file = e.target.files[0];
       if (!file) return;
@@ -855,7 +876,7 @@
       }
     }
 
-    // --- 照合ログ管理 ---
+    // --- 履歴管理 ---
     function addLog(parent, child, result) {
       const logs = JSON.parse(localStorage.getItem('pokayoke_logs') || '[]');
       const now = new Date().toLocaleString();
