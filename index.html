@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>ポカヨケ照合システム (リアルタイム認識)</title>
-  <!-- バーコード/QRリアルタイム読取ライブラリ -->
+  <title>ポカヨケ照合システム (完全修正版)</title>
+  <!-- バーコード/QRスキャンライブラリ -->
   <script src="https://unpkg.com/html5-qrcode"></script>
   <!-- OCR文字認識ライブラリ -->
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
@@ -137,11 +137,13 @@
       text-decoration: none;
     }
 
-    /* リアルタイムカメラスキャンコンテナ */
+    /* ① レスポンシブ対応カメラコンテナ（PC・スマホ両対応） */
     .camera-container {
       position: relative;
       width: 100%;
-      height: 220px;
+      max-width: 500px;
+      margin: 0 auto;
+      aspect-ratio: 4 / 3;
       background: #000;
       border-radius: 8px;
       overflow: hidden;
@@ -149,8 +151,13 @@
     }
 
     #qrVideoReader {
-      width: 100%;
-      height: 100%;
+      width: 100% !important;
+      height: 100% !important;
+      border: none !important;
+    }
+    #qrVideoReader video {
+      object-fit: cover !important;
+      border-radius: 8px;
     }
 
     #ocrVideo {
@@ -159,28 +166,29 @@
       object-fit: cover;
     }
 
-    /* OCR用スキャンターゲット枠 */
-    .scan-target-box {
+    /* ③ OCR用スキャンターゲット枠 */
+    .ocr-scan-box {
       position: absolute;
       top: 50%;
       left: 50%;
       transform: translate(-50%, -50%);
-      width: 70%;
-      height: 60px;
+      width: 80%;
+      height: 70px;
       border: 2px dashed #00e676;
-      border-radius: 6px;
-      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.45);
+      border-radius: 8px;
+      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.5);
       pointer-events: none;
       display: flex;
+      flex-direction: column;
       align-items: center;
       justify-content: center;
+      gap: 4px;
     }
-    .scan-target-box::after {
-      content: "枠内に文字を合わせてください";
+    .ocr-scan-box span {
       color: #00e676;
-      font-size: 0.75rem;
+      font-size: 0.8rem;
       font-weight: bold;
-      background: rgba(0,0,0,0.6);
+      background: rgba(0,0,0,0.7);
       padding: 2px 6px;
       border-radius: 4px;
     }
@@ -321,19 +329,22 @@
       <ul class="child-list" id="childList"></ul>
     </div>
 
-    <!-- リアルタイムカメラ表示エリア -->
-    <div class="camera-container card" id="cameraBox">
+    <!-- カメラ表示エリア -->
+    <div class="camera-container" id="cameraBox">
       <!-- バーコード用コンテナ -->
-      <div id="qrVideoReader" style="display:none;"></div>
+      <div id="qrVideoReader"></div>
 
       <!-- OCR用リアルタイム映像 -->
       <video id="ocrVideo" playsinline autoplay muted style="display:none;"></video>
-      <div class="scan-target-box" id="ocrTargetBox" style="display:none;"></div>
-      
+      <div class="ocr-scan-box" id="ocrScanBox" style="display:none;">
+        <span>枠内に文字を合わせてください</span>
+        <span id="ocrLivePreview" style="font-size:0.75rem; color:#ffeb3b; background:transparent;"></span>
+      </div>
+
       <!-- 内部処理用キャンバス -->
       <canvas id="ocrCanvas" style="display:none;"></canvas>
 
-      <button class="btn btn-reset" style="position:absolute; top:8px; right:8px; z-index:10; padding:4px 10px; font-size:0.75rem;" onclick="stopAllCameras()">カメラ停止</button>
+      <button class="btn btn-reset" style="position:absolute; top:8px; right:8px; z-index:30; padding:6px 12px; font-size:0.8rem;" onclick="stopAllCameras()">カメラ停止</button>
     </div>
 
     <!-- スキャン・入力欄 -->
@@ -344,8 +355,8 @@
         <button class="btn btn-primary" onclick="handleManualInput()">確定</button>
       </div>
       <div class="input-row">
-        <button class="btn btn-cam" style="flex:1;" onclick="startLiveBarcodeScan()">📷 リアルタイム バーコード</button>
-        <button class="btn btn-ocr" style="flex:1;" onclick="startLiveOCRScan()">🔤 リアルタイム OCR</button>
+        <button class="btn btn-cam" style="flex:1;" onclick="startLiveBarcodeScan()">📷 バーコード/QR</button>
+        <button class="btn btn-ocr" style="flex:1;" onclick="startLiveOCRScan()">🔤 文字(OCR)読取</button>
       </div>
     </div>
   </main>
@@ -402,15 +413,15 @@
     let currentStep = 'PARENT';
     let currentParent = '';
     let currentChildItems = [];
-    
-    // スキャナ管理
+
+    // カメラ・OCR管理
     let html5QrCode = null;
     let ocrStream = null;
     let ocrTimer = null;
     let isOcrProcessing = false;
     let ocrWorker = null;
 
-    // --- Audio & バイブレーション ---
+    // --- Audio & バイブレーション制御 ---
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
     function playBeep(freq, duration, type = 'sine') {
@@ -459,7 +470,8 @@
 
     function keepFocus() {
       if (document.getElementById('settingModal').style.display !== 'flex' &&
-          document.getElementById('logModal').style.display !== 'flex') {
+          document.getElementById('logModal').style.display !== 'flex' &&
+          document.getElementById('cameraBox').style.display !== 'block') {
         scanInput.focus();
       }
     }
@@ -590,84 +602,128 @@
       updateUI();
     }
 
-    // --- カメラ停止処理 ---
-    function stopAllCameras() {
-      if (html5QrCode) {
-        html5QrCode.stop().then(() => {
-          document.getElementById('qrVideoReader').style.display = 'none';
-        }).catch(() => {});
-      }
-      if (ocrStream) {
-        ocrStream.getTracks().forEach(track => track.stop());
-        ocrStream = null;
-      }
+    // --- ② カメラ停止・リソース完全解放（再起動バグ解消） ---
+    async function stopAllCameras() {
       if (ocrTimer) {
         clearInterval(ocrTimer);
         ocrTimer = null;
       }
+
+      if (ocrStream) {
+        ocrStream.getTracks().forEach(track => {
+          track.stop();
+          track.enabled = false;
+        });
+        ocrStream = null;
+      }
+
+      const ocrVideo = document.getElementById('ocrVideo');
+      if (ocrVideo) {
+        ocrVideo.srcObject = null;
+        ocrVideo.pause();
+      }
+
+      if (html5QrCode) {
+        try {
+          if (html5QrCode.isScanning) {
+            await html5QrCode.stop();
+          }
+          await html5QrCode.clear();
+        } catch (e) {
+          console.warn('QR Stop cleanup:', e);
+        }
+        html5QrCode = null;
+      }
+
+      document.getElementById('qrVideoReader').style.display = 'none';
       document.getElementById('ocrVideo').style.display = 'none';
-      document.getElementById('ocrTargetBox').style.display = 'none';
+      document.getElementById('ocrScanBox').style.display = 'none';
       document.getElementById('cameraBox').style.display = 'none';
+      document.getElementById('ocrLivePreview').textContent = '';
       isOcrProcessing = false;
       keepFocus();
     }
 
-    // --- リアルタイム バーコード/QR スキャン ---
-    function startLiveBarcodeScan() {
-      stopAllCameras();
+    // --- ① リアルタイム バーコード/QR スキャン（PC/スマホ枠ズレ解消） ---
+    async function startLiveBarcodeScan() {
+      await stopAllCameras();
+
       const cameraBox = document.getElementById('cameraBox');
       const qrReader = document.getElementById('qrVideoReader');
       
       cameraBox.style.display = 'block';
       qrReader.style.display = 'block';
 
-      if (!html5QrCode) {
-        html5QrCode = new Html5Qrcode("qrVideoReader");
-      }
+      // 新規インスタンス生成
+      html5QrCode = new Html5Qrcode("qrVideoReader");
+
+      // コンテナサイズに応じたスキャン枠の動的計算
+      const qrBoxFunction = function(viewfinderWidth, viewfinderHeight) {
+        const minEdge = Math.min(viewfinderWidth, viewfinderHeight);
+        const qrboxSize = Math.floor(minEdge * 0.75);
+        return {
+          width: qrboxSize,
+          height: Math.floor(qrboxSize * 0.6)
+        };
+      };
 
       html5QrCode.start(
         { facingMode: "environment" },
-        { fps: 15, qrbox: { width: 250, height: 120 } },
+        { 
+          fps: 15, 
+          qrbox: qrBoxFunction,
+          aspectRatio: 1.333333
+        },
         (decodedText) => {
           processScan(decodedText);
         },
         () => {}
-      ).catch(() => {
+      ).catch((err) => {
         alert('カメラの起動に失敗しました。カメラ権限を確認してください。');
         stopAllCameras();
       });
     }
 
-    // --- リアルタイム OCR 文字認識（フレーム定期キャプチャ方式） ---
+    // --- ③ リアルタイム OCR エンジン（画像前処理＆高速クロップ） ---
     async function initOcrWorker() {
       if (!ocrWorker) {
+        document.getElementById('statusBanner').textContent = 'OCRエンジンを準備中...';
         ocrWorker = await Tesseract.createWorker('eng');
+        // 半角英数字と一部記号のみに限定して認識率を最大化
+        await ocrWorker.setParameters({
+          tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_'
+        });
       }
     }
 
     async function startLiveOCRScan() {
-      stopAllCameras();
+      await stopAllCameras();
+
       const cameraBox = document.getElementById('cameraBox');
       const ocrVideo = document.getElementById('ocrVideo');
-      const ocrTargetBox = document.getElementById('ocrTargetBox');
+      const ocrScanBox = document.getElementById('ocrScanBox');
 
       cameraBox.style.display = 'block';
       ocrVideo.style.display = 'block';
-      ocrTargetBox.style.display = 'flex';
+      ocrScanBox.style.display = 'flex';
 
       try {
         ocrStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+          video: { 
+            facingMode: 'environment', 
+            width: { ideal: 1920 }, 
+            height: { ideal: 1080 } 
+          },
           audio: false
         });
         ocrVideo.srcObject = ocrStream;
+        await ocrVideo.play();
 
-        document.getElementById('statusBanner').textContent = 'OCRエンジンを準備中...';
         await initOcrWorker();
-        document.getElementById('statusBanner').textContent = '枠内に品番を合わせてください (リアルタイム読取中)';
+        document.getElementById('statusBanner').textContent = '緑枠内に文字を合わせてください (解析中)';
 
-        // 0.8秒ごとにビデオフレームを切り出して認識
-        ocrTimer = setInterval(captureAndRecognizeFrame, 800);
+        // 0.6秒間隔でフレーム解析
+        ocrTimer = setInterval(captureAndRecognizeFrame, 600);
       } catch (err) {
         alert('OCRカメラの起動に失敗しました。カメラ権限を確認してください。');
         stopAllCameras();
@@ -679,27 +735,46 @@
 
       const video = document.getElementById('ocrVideo');
       const canvas = document.getElementById('ocrCanvas');
-      if (video.videoWidth === 0) return;
+      if (!video || video.videoWidth === 0) return;
 
       isOcrProcessing = true;
 
-      // 中央のターゲット枠付近のみをクロップして認識高速化
-      const cropWidth = video.videoWidth * 0.7;
-      const cropHeight = video.videoHeight * 0.25;
-      const startX = (video.videoWidth - cropWidth) / 2;
-      const startY = (video.videoHeight - cropHeight) / 2;
+      // ビデオの実ピクセルから緑枠の位置（中央80% x 高さ25%）を正確に計算
+      const cropW = Math.floor(video.videoWidth * 0.8);
+      const cropH = Math.floor(video.videoHeight * 0.25);
+      const startX = Math.floor((video.videoWidth - cropW) / 2);
+      const startY = Math.floor((video.videoHeight - cropH) / 2);
 
-      canvas.width = cropWidth;
-      canvas.height = cropHeight;
+      canvas.width = cropW;
+      canvas.height = cropH;
       const ctx = canvas.getContext('2d');
-      ctx.drawImage(video, startX, startY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
+
+      // 1. クロップ描画
+      ctx.drawImage(video, startX, startY, cropW, cropH, 0, 0, cropW, cropH);
+
+      // 2. 画像前処理（グレースケール＋コントラスト強調・二値化フィルター）
+      const imgData = ctx.getImageData(0, 0, cropW, cropH);
+      const d = imgData.data;
+      for (let i = 0; i < d.length; i += 4) {
+        const v = 0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2];
+        // 閾値処理で文字の輪郭を強調
+        const b = (v > 125) ? 255 : 0;
+        d[i] = b;
+        d[i+1] = b;
+        d[i+2] = b;
+      }
+      ctx.putImageData(imgData, 0, 0);
 
       try {
         const { data: { text } } = await ocrWorker.recognize(canvas);
-        const cleaned = text.replace(/[^A-Za-z0-9_-]/g, '');
+        const cleaned = text.replace(/[^A-Za-z0-9_-]/g, '').trim();
 
-        if (cleaned && cleaned.length >= 3) {
-          // マスタに合致するか判定
+        if (cleaned) {
+          document.getElementById('ocrLivePreview').textContent = `認識: [ ${cleaned} ]`;
+        }
+
+        // マスタとの照合判定
+        if (cleaned && cleaned.length >= 2) {
           if (currentStep === 'PARENT' && masterData[cleaned]) {
             processScan(cleaned);
           } else if (currentStep === 'CHILD' && currentChildItems.some(item => item.code === cleaned && !item.matched)) {
@@ -707,7 +782,7 @@
           }
         }
       } catch (e) {
-        console.error('OCR Error:', e);
+        console.error('OCR Process Error:', e);
       } finally {
         isOcrProcessing = false;
       }
