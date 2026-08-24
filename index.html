@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>ポカヨケ照合システム (リアルタイム認識)</title>
+  <!-- バーコード/QRリアルタイム読取ライブラリ -->
+  <script src="https://unpkg.com/html5-qrcode"></script>
+  <!-- OCR文字認識ライブラリ -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <style>
+    :root {
+      --primary: #1976d2;
+      --success: #2e7d32;
+      --error: #d32f2f;
+      --bg: #f5f5f5;
+      --card-bg: #ffffff;
+      --text: #212121;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      user-select: none;
+    }
+
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    header {
+      background: var(--primary);
+      color: white;
+      padding: 10px 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+
+    header h1 { font-size: 1.1rem; }
+
+    .header-btns button {
+      background: white;
+      color: var(--primary);
+      border: none;
+      padding: 6px 12px;
+      border-radius: 4px;
+      font-weight: bold;
+      font-size: 0.8rem;
+      cursor: pointer;
+      margin-left: 6px;
+    }
+
+    main {
+      flex: 1;
+      padding: 12px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .card {
+      background: var(--card-bg);
+      border-radius: 8px;
+      padding: 14px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+    }
+
+    /* ステータスバナー */
+    .status-banner {
+      background: #e3f2fd;
+      border-left: 5px solid var(--primary);
+      padding: 10px;
+      font-size: 0.95rem;
+      font-weight: bold;
+      color: #0d47a1;
+      transition: background 0.3s;
+    }
+
+    /* 親品番情報 */
+    .parent-info {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: #fff8e1;
+      border: 1px solid #ffe082;
+      padding: 10px 14px;
+      border-radius: 6px;
+    }
+    .parent-code {
+      font-size: 1.25rem;
+      font-weight: bold;
+      color: #b78103;
+    }
+
+    /* 子品番リスト */
+    .child-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .child-item {
+      padding: 12px 14px;
+      background: #ffffff;
+      border: 2px solid #cfd8dc;
+      border-radius: 6px;
+      font-size: 1.15rem;
+      font-weight: bold;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      transition: all 0.25s ease;
+    }
+
+    /* 照合済（ブラックアウト）状態 */
+    .child-item.matched {
+      background: #e0e0e0 !important;
+      border-color: #9e9e9e !important;
+      color: #757575 !important;
+      text-decoration: line-through;
+    }
+    .child-item.matched .status-tag {
+      color: #2e7d32 !important;
+      font-weight: bold;
+      text-decoration: none;
+    }
+
+    /* リアルタイムカメラスキャンコンテナ */
+    .camera-container {
+      position: relative;
+      width: 100%;
+      height: 220px;
+      background: #000;
+      border-radius: 8px;
+      overflow: hidden;
+      display: none;
+    }
+
+    #qrVideoReader {
+      width: 100%;
+      height: 100%;
+    }
+
+    #ocrVideo {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    /* OCR用スキャンターゲット枠 */
+    .scan-target-box {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 70%;
+      height: 60px;
+      border: 2px dashed #00e676;
+      border-radius: 6px;
+      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.45);
+      pointer-events: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .scan-target-box::after {
+      content: "枠内に文字を合わせてください";
+      color: #00e676;
+      font-size: 0.75rem;
+      font-weight: bold;
+      background: rgba(0,0,0,0.6);
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+
+    /* 入力セクション */
+    .input-section {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .input-row {
+      display: flex;
+      gap: 8px;
+    }
+
+    input[type="text"] {
+      flex: 1;
+      padding: 12px;
+      font-size: 1.1rem;
+      border: 2px solid #90caf9;
+      border-radius: 6px;
+      outline: none;
+      background: #fff;
+    }
+    input[type="text"]:focus {
+      border-color: var(--primary);
+      background: #e3f2fd;
+    }
+
+    .btn {
+      padding: 12px 16px;
+      font-size: 0.95rem;
+      font-weight: bold;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+    }
+    .btn-primary { background: var(--primary); color: white; }
+    .btn-reset { background: #757575; color: white; }
+    .btn-cam { background: #00897b; color: white; }
+    .btn-ocr { background: #8e24aa; color: white; }
+
+    /* 全画面オーバーレイ */
+    .overlay {
+      position: fixed;
+      inset: 0;
+      display: none;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      z-index: 100;
+      color: white;
+      text-align: center;
+      padding: 20px;
+      cursor: pointer;
+    }
+
+    .overlay.ng {
+      background: rgba(211, 47, 47, 0.96);
+      animation: shake 0.2s 3;
+    }
+    .overlay.complete {
+      background: rgba(46, 125, 50, 0.96);
+    }
+
+    .overlay h2 { font-size: 3rem; margin-bottom: 12px; }
+    .overlay p { font-size: 1.3rem; margin-bottom: 20px; }
+    .overlay .sub { font-size: 0.95rem; opacity: 0.8; }
+
+    /* モーダル */
+    .modal {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.5);
+      display: none;
+      justify-content: center;
+      align-items: center;
+      z-index: 90;
+      padding: 16px;
+    }
+    .modal-content {
+      background: white;
+      border-radius: 8px;
+      max-width: 500px;
+      width: 100%;
+      max-height: 85vh;
+      overflow-y: auto;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .modal-content h3 { border-bottom: 2px solid var(--primary); padding-bottom: 6px; }
+
+    @keyframes shake {
+      0%, 100% { transform: translateX(0); }
+      25% { transform: translateX(-15px); }
+      75% { transform: translateX(15px); }
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>ポカヨケ照合</h1>
+    <div class="header-btns">
+      <button onclick="openModal('logModal')">履歴</button>
+      <button onclick="openModal('settingModal')">マスタ設定</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- ステータス表示 -->
+    <div class="status-banner" id="statusBanner">
+      親品番をスキャンしてください
+    </div>
+
+    <!-- 親品番情報 -->
+    <div class="card parent-info" id="parentSection" style="display: none;">
+      <div>
+        <div style="font-size:0.8rem; color:#666;">照合中 親品番:</div>
+        <div class="parent-code" id="displayParentCode">-</div>
+      </div>
+      <button class="btn btn-reset" onclick="resetProcess()">中断/リセット</button>
+    </div>
+
+    <!-- 子品番リスト -->
+    <div class="card" id="childSection" style="display: none;">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <span style="font-weight:bold;">子品番リスト:</span>
+        <span id="remainingCount" style="color:var(--primary); font-weight:bold;">残り 0 / 0</span>
+      </div>
+      <ul class="child-list" id="childList"></ul>
+    </div>
+
+    <!-- リアルタイムカメラ表示エリア -->
+    <div class="camera-container card" id="cameraBox">
+      <!-- バーコード用コンテナ -->
+      <div id="qrVideoReader" style="display:none;"></div>
+
+      <!-- OCR用リアルタイム映像 -->
+      <video id="ocrVideo" playsinline autoplay muted style="display:none;"></video>
+      <div class="scan-target-box" id="ocrTargetBox" style="display:none;"></div>
+      
+      <!-- 内部処理用キャンバス -->
+      <canvas id="ocrCanvas" style="display:none;"></canvas>
+
+      <button class="btn btn-reset" style="position:absolute; top:8px; right:8px; z-index:10; padding:4px 10px; font-size:0.75rem;" onclick="stopAllCameras()">カメラ停止</button>
+    </div>
+
+    <!-- スキャン・入力欄 -->
+    <div class="card input-section">
+      <div class="input-row">
+        <!-- 外付けバーコードリーダー用の自動フォーカス入力枠 -->
+        <input type="text" id="scanInput" placeholder="スキャナ読取 / 手入力" autofocus autocomplete="off">
+        <button class="btn btn-primary" onclick="handleManualInput()">確定</button>
+      </div>
+      <div class="input-row">
+        <button class="btn btn-cam" style="flex:1;" onclick="startLiveBarcodeScan()">📷 リアルタイム バーコード</button>
+        <button class="btn btn-ocr" style="flex:1;" onclick="startLiveOCRScan()">🔤 リアルタイム OCR</button>
+      </div>
+    </div>
+  </main>
+
+  <!-- NG画面オーバーレイ -->
+  <div class="overlay ng" id="ngOverlay" onclick="dismissNG()">
+    <h2>⚠️ NG</h2>
+    <p id="ngMessage">誤った品番です！</p>
+    <div class="sub">画面をタップして照合を再開</div>
+  </div>
+
+  <!-- 完了画面オーバーレイ -->
+  <div class="overlay complete" id="completeOverlay" onclick="dismissComplete()">
+    <h2>🎉 完了</h2>
+    <p>すべての子品番の照合が完了しました！</p>
+    <div class="sub">画面をタップして次の照合へ</div>
+  </div>
+
+  <!-- 設定モーダル -->
+  <div class="modal" id="settingModal">
+    <div class="modal-content">
+      <h3>マスタファイル設定</h3>
+      <div>
+        <label style="font-weight:bold; font-size:0.9rem;">1. CSVファイルを直接選択 (UTF-8 / Shift-JIS自動判別):</label>
+        <input type="file" id="csvFileInput" accept=".csv" style="margin-top:6px; width:100%;">
+      </div>
+      <hr>
+      <div>
+        <label style="font-weight:bold; font-size:0.9rem;">2. Googleドライブ公開CSV URLから同期:</label>
+        <input type="text" id="gdriveUrl" placeholder="https://docs.google.com/spreadsheets/d/.../export?format=csv" style="margin-top:6px; width:100%;">
+        <button class="btn btn-primary" style="margin-top:8px; width:100%;" onclick="syncGDrive()">Googleドライブから取得</button>
+      </div>
+      <div style="font-size:0.8rem; color:#666;">
+        ※マスター登録件数: <span id="masterCount">0</span> 件
+      </div>
+      <button class="btn btn-reset" onclick="closeModal('settingModal')">閉じる</button>
+    </div>
+  </div>
+
+  <!-- 履歴モーダル -->
+  <div class="modal" id="logModal">
+    <div class="modal-content">
+      <h3>照合ログ履歴</h3>
+      <div style="max-height:250px; overflow-y:auto; border:1px solid #ccc; padding:8px; font-size:0.8rem;" id="logContainer"></div>
+      <button class="btn btn-primary" onclick="exportLogsCSV()">CSVダウンロード</button>
+      <button class="btn btn-reset" onclick="clearLogs()">ログ消去</button>
+      <button class="btn btn-reset" onclick="closeModal('logModal')">閉じる</button>
+    </div>
+  </div>
+
+  <script>
+    // --- 状態変数 ---
+    let masterData = {};
+    let currentStep = 'PARENT';
+    let currentParent = '';
+    let currentChildItems = [];
+    
+    // スキャナ管理
+    let html5QrCode = null;
+    let ocrStream = null;
+    let ocrTimer = null;
+    let isOcrProcessing = false;
+    let ocrWorker = null;
+
+    // --- Audio & バイブレーション ---
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    function playBeep(freq, duration, type = 'sine') {
+      try {
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = type;
+        osc.frequency.value = freq;
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        gain.gain.exponentialRampToValueAtTime(0.00001, audioCtx.currentTime + duration);
+        osc.stop(audioCtx.currentTime + duration);
+      } catch (e) {}
+    }
+
+    function notifyOK() {
+      playBeep(1200, 0.15);
+      setTimeout(() => playBeep(1600, 0.15), 100);
+      if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+    }
+
+    function notifyNG() {
+      playBeep(300, 0.4, 'square');
+      if (navigator.vibrate) navigator.vibrate([400, 100, 400]);
+    }
+
+    function notifyComplete() {
+      playBeep(880, 0.15);
+      setTimeout(() => playBeep(1174, 0.15), 120);
+      setTimeout(() => playBeep(1760, 0.3), 240);
+      if (navigator.vibrate) navigator.vibrate([200, 100, 200, 100, 400]);
+    }
+
+    // --- 外付けバーコードリーダー制御 ---
+    const scanInput = document.getElementById('scanInput');
+    scanInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const val = scanInput.value.trim();
+        if (val) processScan(val);
+        scanInput.value = '';
+      }
+    });
+
+    function keepFocus() {
+      if (document.getElementById('settingModal').style.display !== 'flex' &&
+          document.getElementById('logModal').style.display !== 'flex') {
+        scanInput.focus();
+      }
+    }
+    document.addEventListener('click', keepFocus);
+
+    function handleManualInput() {
+      const val = scanInput.value.trim();
+      if (val) processScan(val);
+      scanInput.value = '';
+    }
+
+    // --- 照合ロジック ---
+    function processScan(code) {
+      code = code.trim();
+      if (!code) return;
+
+      if (currentStep === 'PARENT') {
+        if (masterData[code]) {
+          currentParent = code;
+          currentChildItems = masterData[code].map(c => ({ code: c, matched: false }));
+          currentStep = 'CHILD';
+          notifyOK();
+          updateUI();
+          addLog(currentParent, '-', '親品番読取OK');
+        } else {
+          notifyNG();
+          showNG(`親品番 [${code}] はマスタに未登録です`);
+          addLog(code, '-', '親品番NG (未登録)');
+        }
+      } else if (currentStep === 'CHILD') {
+        const target = currentChildItems.find(item => item.code === code && !item.matched);
+
+        if (target) {
+          target.matched = true;
+          notifyOK();
+          addLog(currentParent, code, '子品番OK');
+
+          const remaining = currentChildItems.filter(i => !i.matched).length;
+          updateUI();
+
+          if (remaining === 0) {
+            setTimeout(() => {
+              notifyComplete();
+              showComplete();
+              addLog(currentParent, '-', '全子品番照合完了');
+            }, 300);
+          }
+        } else {
+          const isAlreadyMatched = currentChildItems.some(item => item.code === code && item.matched);
+          notifyNG();
+          if (isAlreadyMatched) {
+            showNG(`子品番 [${code}] は既に照合済みです`);
+            addLog(currentParent, code, '子品番NG (重複読取)');
+          } else {
+            showNG(`誤った子品番: [${code}]`);
+            addLog(currentParent, code, '子品番NG (不一致)');
+          }
+        }
+      }
+    }
+
+    // --- UI更新 ---
+    function updateUI() {
+      const banner = document.getElementById('statusBanner');
+      const parentSec = document.getElementById('parentSection');
+      const childSec = document.getElementById('childSection');
+      const childList = document.getElementById('childList');
+      const remainingCount = document.getElementById('remainingCount');
+
+      if (currentStep === 'PARENT') {
+        banner.textContent = '親品番をスキャンしてください';
+        banner.style.background = '#e3f2fd';
+        parentSec.style.display = 'none';
+        childSec.style.display = 'none';
+      } else {
+        const remaining = currentChildItems.filter(i => !i.matched).length;
+        const total = currentChildItems.length;
+
+        banner.textContent = `子品番をスキャンしてください (残り: ${remaining}/${total}点)`;
+        banner.style.background = '#fff3e0';
+        parentSec.style.display = 'flex';
+        childSec.style.display = 'block';
+        document.getElementById('displayParentCode').textContent = currentParent;
+        remainingCount.textContent = `残り ${remaining} / ${total}`;
+
+        childList.innerHTML = '';
+        currentChildItems.forEach(item => {
+          const li = document.createElement('li');
+          li.className = `child-item ${item.matched ? 'matched' : ''}`;
+          li.innerHTML = `
+            <span>${item.code}</span>
+            <span class="status-tag" style="font-size:0.85rem; color:${item.matched ? '#2e7d32' : '#d32f2f'};">
+              ${item.matched ? '✔ 照合済' : '未読込'}
+            </span>
+          `;
+          childList.appendChild(li);
+        });
+      }
+      keepFocus();
+    }
+
+    function showNG(msg) {
+      stopAllCameras();
+      document.getElementById('ngMessage').textContent = msg;
+      document.getElementById('ngOverlay').style.display = 'flex';
+    }
+
+    function dismissNG() {
+      document.getElementById('ngOverlay').style.display = 'none';
+      keepFocus();
+    }
+
+    function showComplete() {
+      stopAllCameras();
+      document.getElementById('completeOverlay').style.display = 'flex';
+    }
+
+    function dismissComplete() {
+      document.getElementById('completeOverlay').style.display = 'none';
+      resetProcess();
+    }
+
+    function resetProcess() {
+      stopAllCameras();
+      currentStep = 'PARENT';
+      currentParent = '';
+      currentChildItems = [];
+      updateUI();
+    }
+
+    // --- カメラ停止処理 ---
+    function stopAllCameras() {
+      if (html5QrCode) {
+        html5QrCode.stop().then(() => {
+          document.getElementById('qrVideoReader').style.display = 'none';
+        }).catch(() => {});
+      }
+      if (ocrStream) {
+        ocrStream.getTracks().forEach(track => track.stop());
+        ocrStream = null;
+      }
+      if (ocrTimer) {
+        clearInterval(ocrTimer);
+        ocrTimer = null;
+      }
+      document.getElementById('ocrVideo').style.display = 'none';
+      document.getElementById('ocrTargetBox').style.display = 'none';
+      document.getElementById('cameraBox').style.display = 'none';
+      isOcrProcessing = false;
+      keepFocus();
+    }
+
+    // --- リアルタイム バーコード/QR スキャン ---
+    function startLiveBarcodeScan() {
+      stopAllCameras();
+      const cameraBox = document.getElementById('cameraBox');
+      const qrReader = document.getElementById('qrVideoReader');
+      
+      cameraBox.style.display = 'block';
+      qrReader.style.display = 'block';
+
+      if (!html5QrCode) {
+        html5QrCode = new Html5Qrcode("qrVideoReader");
+      }
+
+      html5QrCode.start(
+        { facingMode: "environment" },
+        { fps: 15, qrbox: { width: 250, height: 120 } },
+        (decodedText) => {
+          processScan(decodedText);
+        },
+        () => {}
+      ).catch(() => {
+        alert('カメラの起動に失敗しました。カメラ権限を確認してください。');
+        stopAllCameras();
+      });
+    }
+
+    // --- リアルタイム OCR 文字認識（フレーム定期キャプチャ方式） ---
+    async function initOcrWorker() {
+      if (!ocrWorker) {
+        ocrWorker = await Tesseract.createWorker('eng');
+      }
+    }
+
+    async function startLiveOCRScan() {
+      stopAllCameras();
+      const cameraBox = document.getElementById('cameraBox');
+      const ocrVideo = document.getElementById('ocrVideo');
+      const ocrTargetBox = document.getElementById('ocrTargetBox');
+
+      cameraBox.style.display = 'block';
+      ocrVideo.style.display = 'block';
+      ocrTargetBox.style.display = 'flex';
+
+      try {
+        ocrStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: false
+        });
+        ocrVideo.srcObject = ocrStream;
+
+        document.getElementById('statusBanner').textContent = 'OCRエンジンを準備中...';
+        await initOcrWorker();
+        document.getElementById('statusBanner').textContent = '枠内に品番を合わせてください (リアルタイム読取中)';
+
+        // 0.8秒ごとにビデオフレームを切り出して認識
+        ocrTimer = setInterval(captureAndRecognizeFrame, 800);
+      } catch (err) {
+        alert('OCRカメラの起動に失敗しました。カメラ権限を確認してください。');
+        stopAllCameras();
+      }
+    }
+
+    async function captureAndRecognizeFrame() {
+      if (isOcrProcessing || !ocrStream) return;
+
+      const video = document.getElementById('ocrVideo');
+      const canvas = document.getElementById('ocrCanvas');
+      if (video.videoWidth === 0) return;
+
+      isOcrProcessing = true;
+
+      // 中央のターゲット枠付近のみをクロップして認識高速化
+      const cropWidth = video.videoWidth * 0.7;
+      const cropHeight = video.videoHeight * 0.25;
+      const startX = (video.videoWidth - cropWidth) / 2;
+      const startY = (video.videoHeight - cropHeight) / 2;
+
+      canvas.width = cropWidth;
+      canvas.height = cropHeight;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, startX, startY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
+
+      try {
+        const { data: { text } } = await ocrWorker.recognize(canvas);
+        const cleaned = text.replace(/[^A-Za-z0-9_-]/g, '');
+
+        if (cleaned && cleaned.length >= 3) {
+          // マスタに合致するか判定
+          if (currentStep === 'PARENT' && masterData[cleaned]) {
+            processScan(cleaned);
+          } else if (currentStep === 'CHILD' && currentChildItems.some(item => item.code === cleaned && !item.matched)) {
+            processScan(cleaned);
+          }
+        }
+      } catch (e) {
+        console.error('OCR Error:', e);
+      } finally {
+        isOcrProcessing = false;
+      }
+    }
+
+    // --- CSV読み込み (Shift-JIS / UTF-8) ---
+    document.getElementById('csvFileInput').addEventListener('change', function(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = function(evt) {
+        const buffer = evt.target.result;
+        let text = '';
+        try {
+          text = new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+        } catch (e) {
+          text = new TextDecoder('shift-jis').decode(buffer);
+        }
+        parseCSV(text);
+      };
+      reader.readAsArrayBuffer(file);
+    });
+
+    function parseCSV(text) {
+      const lines = text.split(/\r\n|\n|\r/);
+      masterData = {};
+      let count = 0;
+
+      lines.forEach(line => {
+        if (!line.trim()) return;
+        const cols = line.split(',').map(s => s.trim().replace(/^"|"$/g, ''));
+        const parent = cols[0];
+        const children = cols.slice(1).filter(s => s !== '');
+
+        if (parent && children.length > 0) {
+          masterData[parent] = children;
+          count++;
+        }
+      });
+
+      document.getElementById('masterCount').textContent = count;
+      localStorage.setItem('pokayoke_master', JSON.stringify(masterData));
+      alert(`マスタを読み込みました（${count}件の親品番登録）`);
+      closeModal('settingModal');
+    }
+
+    // Googleドライブ同期
+    async function syncGDrive() {
+      const url = document.getElementById('gdriveUrl').value.trim();
+      if (!url) return alert('URLを入力してください');
+
+      try {
+        const res = await fetch(url);
+        const buffer = await res.arrayBuffer();
+        let text = '';
+        try {
+          text = new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+        } catch(e) {
+          text = new TextDecoder('shift-jis').decode(buffer);
+        }
+        parseCSV(text);
+        localStorage.setItem('pokayoke_gdrive_url', url);
+      } catch (e) {
+        alert('取得に失敗しました。公開設定やCORS制限を確認してください。');
+      }
+    }
+
+    // --- 照合ログ管理 ---
+    function addLog(parent, child, result) {
+      const logs = JSON.parse(localStorage.getItem('pokayoke_logs') || '[]');
+      const now = new Date().toLocaleString();
+      logs.unshift({ date: now, parent, child, result });
+      localStorage.setItem('pokayoke_logs', JSON.stringify(logs.slice(0, 500)));
+      renderLogs();
+    }
+
+    function renderLogs() {
+      const logs = JSON.parse(localStorage.getItem('pokayoke_logs') || '[]');
+      const container = document.getElementById('logContainer');
+      container.innerHTML = logs.map(l => `<div>[${l.date}] 親:${l.parent} 子:${l.child} ➔ <b>${l.result}</b></div>`).join('');
+    }
+
+    function exportLogsCSV() {
+      const logs = JSON.parse(localStorage.getItem('pokayoke_logs') || '[]');
+      let csv = '日時,親品番,子品番,判定結果\r\n';
+      logs.forEach(l => {
+        csv += `"${l.date}","${l.parent}","${l.child}","${l.result}"\r\n`;
+      });
+      const blob = new Blob([new Uint8Array([0xEF, 0xBB, 0xBF]), csv], { type: 'text/csv;charset=utf-8;' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = `pokayoke_log_${Date.now()}.csv`;
+      link.click();
+    }
+
+    function clearLogs() {
+      if (confirm('履歴を消去しますか？')) {
+        localStorage.removeItem('pokayoke_logs');
+        renderLogs();
+      }
+    }
+
+    // --- モーダル制御 ---
+    function openModal(id) {
+      document.getElementById(id).style.display = 'flex';
+      if (id === 'logModal') renderLogs();
+    }
+    function closeModal(id) {
+      document.getElementById(id).style.display = 'none';
+      keepFocus();
+    }
+
+    // 初期化
+    window.onload = function() {
+      const savedMaster = localStorage.getItem('pokayoke_master');
+      if (savedMaster) {
+        masterData = JSON.parse(savedMaster);
+        document.getElementById('masterCount').textContent = Object.keys(masterData).length;
+      }
+      const savedUrl = localStorage.getItem('pokayoke_gdrive_url');
+      if (savedUrl) document.getElementById('gdriveUrl').value = savedUrl;
+      updateUI();
+      keepFocus();
+    };
+  </script>
+</body>
+</html>
