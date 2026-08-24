@@ -3,10 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>ポカヨケ照合システム (常時カメラ連携版)</title>
-  <!-- バーコード/QRスキャンライブラリ -->
+  <title>ポカヨケ照合システム (連続スキャン版)</title>
   <script src="https://unpkg.com/html5-qrcode"></script>
-  <!-- OCR文字認識ライブラリ -->
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <style>
     :root {
@@ -75,7 +73,6 @@
       box-shadow: 0 2px 6px rgba(0,0,0,0.06);
     }
 
-    /* ステータスバナー */
     .status-banner {
       background: #e3f2fd;
       border-left: 5px solid var(--primary);
@@ -86,7 +83,6 @@
       transition: background 0.3s;
     }
 
-    /* 親品番情報 */
     .parent-info {
       display: flex;
       justify-content: space-between;
@@ -102,7 +98,6 @@
       color: #b78103;
     }
 
-    /* レスポンシブ対応カメラコンテナ */
     .camera-container {
       position: relative;
       width: 100%;
@@ -131,7 +126,6 @@
       object-fit: cover;
     }
 
-    /* OCR用スキャンターゲット枠 */
     .ocr-scan-box {
       position: absolute;
       top: 50%;
@@ -158,7 +152,6 @@
       border-radius: 4px;
     }
 
-    /* 子品番リスト */
     .child-list {
       list-style: none;
       display: flex;
@@ -182,7 +175,6 @@
       transition: all 0.25s ease;
     }
 
-    /* 照合済（ブラックアウト）状態 */
     .child-item.matched {
       background: #e0e0e0 !important;
       border-color: #9e9e9e !important;
@@ -195,7 +187,6 @@
       text-decoration: none;
     }
 
-    /* 入力セクション */
     .input-section {
       display: flex;
       flex-direction: column;
@@ -238,7 +229,6 @@
     .btn-cam { background: #00897b; color: white; }
     .btn-ocr { background: #8e24aa; color: white; }
 
-    /* 全画面オーバーレイ */
     .overlay {
       position: fixed;
       inset: 0;
@@ -265,7 +255,6 @@
     .overlay p { font-size: 1.2rem; margin-bottom: 20px; }
     .overlay .sub { font-size: 0.9rem; opacity: 0.8; }
 
-    /* モーダル */
     .modal {
       position: fixed;
       inset: 0;
@@ -308,12 +297,10 @@
   </header>
 
   <main>
-    <!-- ステータス表示 -->
     <div class="status-banner" id="statusBanner">
       親品番をスキャンしてください
     </div>
 
-    <!-- 親品番情報 -->
     <div class="card parent-info" id="parentSection" style="display: none;">
       <div>
         <div style="font-size:0.75rem; color:#666;">照合中 親品番:</div>
@@ -322,25 +309,19 @@
       <button class="btn btn-reset" onclick="resetProcess()">中断/リセット</button>
     </div>
 
-    <!-- カメラ表示エリア（親品番・子品番どちらの照合時も画面内に保持可能） -->
     <div class="camera-container" id="cameraBox">
-      <!-- バーコード用コンテナ -->
       <div id="qrVideoReader"></div>
 
-      <!-- OCR用リアルタイム映像 -->
       <video id="ocrVideo" playsinline autoplay muted style="display:none;"></video>
       <div class="ocr-scan-box" id="ocrScanBox" style="display:none;">
         <span>枠内に文字を合わせてください</span>
         <span id="ocrLivePreview" style="font-size:0.75rem; color:#ffeb3b; background:transparent;"></span>
       </div>
 
-      <!-- 内部処理用キャンバス -->
       <canvas id="ocrCanvas" style="display:none;"></canvas>
-
       <button class="btn btn-reset" style="position:absolute; top:6px; right:6px; z-index:30; padding:4px 10px; font-size:0.75rem;" onclick="stopAllCameras()">カメラ停止</button>
     </div>
 
-    <!-- 子品番照合リスト（スキャン時もカメラの下に常時表示） -->
     <div class="card" id="childSection" style="display: none;">
       <div style="display:flex; justify-content:space-between; align-items:center;">
         <span style="font-weight:bold; font-size:0.95rem;">子品番リスト:</span>
@@ -349,10 +330,8 @@
       <ul class="child-list" id="childList"></ul>
     </div>
 
-    <!-- スキャン・入力欄 -->
     <div class="card input-section">
       <div class="input-row">
-        <!-- 外付けリーダー用自動フォーカス入力枠 -->
         <input type="text" id="scanInput" placeholder="スキャナ読取 / 手入力" autofocus autocomplete="off">
         <button class="btn btn-primary" onclick="handleManualInput()">確定</button>
       </div>
@@ -363,21 +342,18 @@
     </div>
   </main>
 
-  <!-- NG画面オーバーレイ -->
   <div class="overlay ng" id="ngOverlay" onclick="dismissNG()">
     <h2>⚠️ NG</h2>
     <p id="ngMessage">誤った品番です！</p>
     <div class="sub">画面をタップして照合を再開</div>
   </div>
 
-  <!-- 完了画面オーバーレイ -->
   <div class="overlay complete" id="completeOverlay" onclick="dismissComplete()">
     <h2>🎉 完了</h2>
     <p>すべての子品番の照合が完了しました！</p>
     <div class="sub">画面をタップして次の照合へ</div>
   </div>
 
-  <!-- 設定モーダル -->
   <div class="modal" id="settingModal">
     <div class="modal-content">
       <h3>マスタファイル設定</h3>
@@ -398,7 +374,6 @@
     </div>
   </div>
 
-  <!-- 履歴モーダル -->
   <div class="modal" id="logModal">
     <div class="modal-content">
       <h3>照合ログ履歴</h3>
@@ -410,21 +385,23 @@
   </div>
 
   <script>
-    // --- 状態変数 ---
     let masterData = {};
     let currentStep = 'PARENT';
     let currentParent = '';
     let currentChildItems = [];
-    let currentCameraMode = null; // 'QR' または 'OCR' または null
+    let currentCameraMode = null;
 
-    // カメラ・OCR管理
+    // スキャン制御フラグ（連続スキャン用クールダウン制御）
+    let isCoolDown = false;
+    let lastScannedCode = '';
+    let lastScannedTime = 0;
+
     let html5QrCode = null;
     let ocrStream = null;
     let ocrTimer = null;
     let isOcrProcessing = false;
     let ocrWorker = null;
 
-    // --- Audio & バイブレーション ---
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
     function playBeep(freq, duration, type = 'sine') {
@@ -460,7 +437,6 @@
       if (navigator.vibrate) navigator.vibrate([200, 100, 200, 100, 400]);
     }
 
-    // --- 外付けバーコードリーダー制御 ---
     const scanInput = document.getElementById('scanInput');
     scanInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
@@ -486,10 +462,16 @@
       scanInput.value = '';
     }
 
-    // --- 照合ロジック ---
+    // --- 照合ロジック（連続読み取り対応） ---
     function processScan(code) {
       code = code.trim();
       if (!code) return;
+
+      const now = Date.now();
+      // 同一コードのチャタリング防止（1.5秒以内の同一コード連続検知を抑制）
+      if (isCoolDown || (code === lastScannedCode && (now - lastScannedTime < 1500))) {
+        return;
+      }
 
       if (currentStep === 'PARENT') {
         if (masterData[code]) {
@@ -499,8 +481,9 @@
           notifyOK();
           updateUI();
           addLog(currentParent, '-', '親品番読取OK');
-          
-          // 親品番読取後もカメラ起動中なら、そのまま子品番スキャン用に継続稼働
+
+          // クールダウン設定後、カメラを止めずに継続
+          setScanCoolDown(code);
         } else {
           notifyNG();
           showNG(`親品番 [${code}] はマスタに未登録です`);
@@ -513,6 +496,7 @@
           target.matched = true;
           notifyOK();
           addLog(currentParent, code, '子品番OK');
+          setScanCoolDown(code);
 
           const remaining = currentChildItems.filter(i => !i.matched).length;
           updateUI();
@@ -538,7 +522,16 @@
       }
     }
 
-    // --- UI更新 ---
+    // スキャン後のクールダウン制御（カメラを止めずに次を読み取る）
+    function setScanCoolDown(code) {
+      isCoolDown = true;
+      lastScannedCode = code;
+      lastScannedTime = Date.now();
+      setTimeout(() => {
+        isCoolDown = false;
+      }, 1000); // 1秒後に次のスキャン可能
+    }
+
     function updateUI() {
       const banner = document.getElementById('statusBanner');
       const parentSec = document.getElementById('parentSection');
@@ -584,8 +577,6 @@
       document.getElementById('ngMessage').textContent = msg;
       const ngOverlay = document.getElementById('ngOverlay');
       ngOverlay.style.display = 'flex';
-      
-      // 再開時にカメラモードを復帰できるように保持
       ngOverlay.dataset.prevMode = prevMode || '';
     }
 
@@ -594,7 +585,6 @@
       const prevMode = ngOverlay.dataset.prevMode;
       ngOverlay.style.display = 'none';
 
-      // エラー解除後に直前のカメラを自動再開
       if (prevMode === 'QR') {
         startLiveBarcodeScan();
       } else if (prevMode === 'OCR') {
@@ -618,10 +608,10 @@
       currentStep = 'PARENT';
       currentParent = '';
       currentChildItems = [];
+      lastScannedCode = '';
       updateUI();
     }
 
-    // --- カメラ停止処理 ---
     async function stopAllCameras() {
       currentCameraMode = null;
       if (ocrTimer) {
@@ -649,9 +639,7 @@
             await html5QrCode.stop();
           }
           await html5QrCode.clear();
-        } catch (e) {
-          console.warn('QR Stop cleanup:', e);
-        }
+        } catch (e) {}
         html5QrCode = null;
       }
 
@@ -661,10 +649,11 @@
       document.getElementById('cameraBox').style.display = 'none';
       document.getElementById('ocrLivePreview').textContent = '';
       isOcrProcessing = false;
+      isCoolDown = false;
       keepFocus();
     }
 
-    // --- リアルタイム バーコード/QR スキャン ---
+    // --- リアルタイム バーコード/QR（連続読み取り） ---
     async function startLiveBarcodeScan() {
       await stopAllCameras();
       currentCameraMode = 'QR';
@@ -689,11 +678,12 @@
       html5QrCode.start(
         { facingMode: "environment" },
         { 
-          fps: 15, 
+          fps: 20, 
           qrbox: qrBoxFunction,
           aspectRatio: 1.777778
         },
         (decodedText) => {
+          // 連続して読取処理へ
           processScan(decodedText);
         },
         () => {}
@@ -703,7 +693,7 @@
       });
     }
 
-    // --- リアルタイム OCR 文字認識 ---
+    // --- リアルタイム OCR（連続フレーム解析） ---
     async function initOcrWorker() {
       if (!ocrWorker) {
         document.getElementById('statusBanner').textContent = 'OCRエンジンを準備中...';
@@ -739,9 +729,10 @@
         await ocrVideo.play();
 
         await initOcrWorker();
-        document.getElementById('statusBanner').textContent = '緑枠内に文字を合わせてください (リアルタイム読取中)';
+        document.getElementById('statusBanner').textContent = '緑枠内に文字を合わせてください (連続読取中)';
 
-        ocrTimer = setInterval(captureAndRecognizeFrame, 600);
+        // 0.5秒間隔でフレームを継続解析
+        ocrTimer = setInterval(captureAndRecognizeFrame, 500);
       } catch (err) {
         alert('OCRカメラの起動に失敗しました。カメラ権限を確認してください。');
         stopAllCameras();
@@ -749,7 +740,7 @@
     }
 
     async function captureAndRecognizeFrame() {
-      if (isOcrProcessing || !ocrStream) return;
+      if (isOcrProcessing || !ocrStream || isCoolDown) return;
 
       const video = document.getElementById('ocrVideo');
       const canvas = document.getElementById('ocrCanvas');
@@ -797,7 +788,7 @@
       } catch (e) {
         console.error('OCR Process Error:', e);
       } finally {
-        isOcrProcessing = false;
+        isOcrProcessing = false; // 次のフレーム解析を必ず解放
       }
     }
 
@@ -899,7 +890,6 @@
       }
     }
 
-    // --- モーダル制御 ---
     function openModal(id) {
       document.getElementById(id).style.display = 'flex';
       if (id === 'logModal') renderLogs();
@@ -909,7 +899,6 @@
       keepFocus();
     }
 
-    // 初期化
     window.onload = function() {
       const savedMaster = localStorage.getItem('pokayoke_master');
       if (savedMaster) {
