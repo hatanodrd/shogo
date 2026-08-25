@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>ポカヨケ照合システム (キーボード制御版)</title>
+  <title>ポカヨケ照合システム (OCR枠スリム版)</title>
   <script src="https://unpkg.com/html5-qrcode"></script>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <style>
@@ -126,31 +126,34 @@
       object-fit: fill;
     }
 
+    /* ★ OCRターゲット枠（縦幅を狭く調整：34px） ★ */
     .ocr-scan-box {
       position: absolute;
       top: 50%;
       left: 50%;
       transform: translate(-50%, -50%);
-      width: 70%;
-      height: 50px;
+      width: 75%;
+      height: 34px;
       border: 2px solid #00e676;
-      border-radius: 6px;
-      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.45);
+      border-radius: 4px;
+      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.5);
       pointer-events: none;
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      gap: 2px;
       z-index: 10;
     }
-    .ocr-scan-box span {
+    .ocr-scan-box span.guide-text {
+      position: absolute;
+      top: -20px;
       color: #00e676;
-      font-size: 0.75rem;
+      font-size: 0.7rem;
       font-weight: bold;
       background: rgba(0,0,0,0.7);
-      padding: 2px 6px;
-      border-radius: 4px;
+      padding: 1px 6px;
+      border-radius: 3px;
+      white-space: nowrap;
     }
 
     .crop-preview-box {
@@ -165,7 +168,7 @@
     }
     #ocrCanvas {
       width: 80px;
-      height: 20px;
+      height: 16px;
       border: 1px solid #999;
       background: #fff;
     }
@@ -216,7 +219,7 @@
       gap: 6px;
     }
 
-    input[type="text"] {
+    input[type="text"], input[type="number"] {
       flex: 1;
       padding: 10px 12px;
       font-size: 1rem;
@@ -225,7 +228,7 @@
       outline: none;
       background: #fff;
     }
-    input[type="text"]:focus {
+    input[type="text"]:focus, input[type="number"]:focus {
       border-color: var(--primary);
       background: #e3f2fd;
     }
@@ -332,7 +335,7 @@
 
       <video id="ocrVideo" playsinline autoplay muted style="display:none;"></video>
       <div class="ocr-scan-box" id="ocrScanBox" style="display:none;">
-        <span>枠内に文字を合わせてください</span>
+        <span class="guide-text">枠内に文字を合わせてください</span>
         <span id="ocrLivePreview" style="font-size:0.75rem; color:#ffeb3b; background:transparent;"></span>
       </div>
 
@@ -378,9 +381,23 @@
     <div class="sub">画面をタップして次の照合へ</div>
   </div>
 
+  <!-- マスタ設定モーダル -->
   <div class="modal" id="settingModal">
     <div class="modal-content">
-      <h3>マスタファイル設定</h3>
+      <h3>マスタファイル・読取設定</h3>
+
+      <div>
+        <label style="font-weight:bold; font-size:0.9rem; color:var(--primary);">QRコード読取桁数制限 (先頭からの桁数):</label>
+        <div style="display:flex; gap:8px; margin-top:6px; align-items:center;">
+          <input type="number" id="qrLengthLimit" placeholder="例: 8 (空欄=全桁読取)" min="1" max="50">
+          <button class="btn btn-primary" style="padding:8px 12px;" onclick="saveQrLimitSetting()">設定保存</button>
+        </div>
+        <div style="font-size:0.75rem; color:#666; margin-top:4px;">
+          ※QR読取時のみ先頭から指定文字数だけ抽出します（空欄時は全桁読取）
+        </div>
+      </div>
+      <hr>
+
       <div>
         <label style="font-weight:bold; font-size:0.9rem;">1. CSVファイルを直接選択 (UTF-8 / Shift-JIS自動判別):</label>
         <input type="file" id="csvFileInput" accept=".csv" style="margin-top:6px; width:100%;">
@@ -470,20 +487,12 @@
       }
     });
 
-    // ★ キーボード抑制制御（カメラ起動中はフォーカスを外してキーボードを出さない） ★
     function keepFocus() {
       const isCameraActive = document.getElementById('cameraBox').style.display === 'block';
-      const isSettingOpen = document.getElementById('settingModal').style.display === 'flex';
-      const isLogOpen = document.getElementById('logModal').style.display === 'flex';
-
       if (isCameraActive) {
-        // カメラが起動している時はフォーカスを外してキーボードを完全に閉じる
         if (document.activeElement === scanInput) {
           scanInput.blur();
         }
-      } else if (!isSettingOpen && !isLogOpen) {
-        // カメラ停止時かつPC/外付けリーダー用の時のみフォーカス
-        // モバイルで直接タップされた時以外は無理にフォーカスを奪わない
       }
     }
     document.addEventListener('click', keepFocus);
@@ -681,10 +690,30 @@
       keepFocus();
     }
 
+    // --- QRコード桁数制限処理 ---
+    function formatQrCode(rawCode) {
+      const limit = parseInt(localStorage.getItem('pokayoke_qr_limit') || '0', 10);
+      if (limit > 0 && rawCode.length > limit) {
+        return rawCode.substring(0, limit);
+      }
+      return rawCode;
+    }
+
+    function saveQrLimitSetting() {
+      const val = document.getElementById('qrLengthLimit').value.trim();
+      if (val === '' || parseInt(val, 10) <= 0) {
+        localStorage.removeItem('pokayoke_qr_limit');
+        alert('QRコードの桁数制限を解除しました（全桁読取）');
+      } else {
+        localStorage.setItem('pokayoke_qr_limit', val);
+        alert(`QRコード読取桁数を「先頭 ${val} 桁」に設定しました`);
+      }
+    }
+
     // --- バーコード/QR ---
     async function startLiveBarcodeScan() {
       await stopAllCameras();
-      scanInput.blur(); // キーボードを閉じる
+      scanInput.blur();
       currentCameraMode = 'QR';
 
       const cameraBox = document.getElementById('cameraBox');
@@ -711,7 +740,8 @@
           aspectRatio: 1.333333
         },
         (decodedText) => {
-          processScan(decodedText);
+          const formatted = formatQrCode(decodedText);
+          processScan(formatted);
         },
         () => {}
       ).catch((err) => {
@@ -768,7 +798,7 @@
 
     async function startLiveOCRScan() {
       await stopAllCameras();
-      scanInput.blur(); // キーボードを閉じる
+      scanInput.blur();
       currentCameraMode = 'OCR';
 
       const cameraBox = document.getElementById('cameraBox');
@@ -803,6 +833,7 @@
       }
     }
 
+    // ★ 狭めた枠（高さ約11%）に合わせて中心からジャストクロップ ★
     async function captureAndRecognizeFrame() {
       if (isOcrProcessing || !ocrStream || isCoolDown) return;
 
@@ -812,8 +843,9 @@
 
       isOcrProcessing = true;
 
-      const cropWidth = Math.floor(video.videoWidth * 0.70);
-      const cropHeight = Math.floor(video.videoHeight * 0.18);
+      // 枠幅75%、枠高さ約11%（34px相当）に切り抜き比率を同期
+      const cropWidth = Math.floor(video.videoWidth * 0.75);
+      const cropHeight = Math.floor(video.videoHeight * 0.11);
       const startX = Math.floor((video.videoWidth - cropWidth) / 2);
       const startY = Math.floor((video.videoHeight - cropHeight) / 2);
 
@@ -979,6 +1011,12 @@
       }
       const savedUrl = localStorage.getItem('pokayoke_gdrive_url');
       if (savedUrl) document.getElementById('gdriveUrl').value = savedUrl;
+
+      const savedQrLimit = localStorage.getItem('pokayoke_qr_limit');
+      if (savedQrLimit) {
+        document.getElementById('qrLengthLimit').value = savedQrLimit;
+      }
+
       updateUI();
     };
   </script>
