@@ -1,6 +1,9 @@
 // =========================================================
-// config_audio.js : 定数・グローバル状態・音声＆効果音変更・ログ管理
+// config_audio.js : 定数・グローバル状態・IndexedDB・音声＆効果音
 // =========================================================
+const DB_NAME = 'pokayoke_idb_v1';
+const DB_STORE = 'app_data';
+
 const STORAGE_KEY = 'pokayoke_step_profiles_v5';
 const TABLE_A_KEY = 'pokayoke_csv_table_a_v5';
 const TABLE_B_KEY = 'pokayoke_csv_table_b_v5';
@@ -20,7 +23,7 @@ let audioConfig = {
   rate: 1.15,
   pitch: 1.0,
   volume: 1.0,
-  buzzerPreset: 'STANDARD' // STANDARD, CHIME, DOUBLE, MUTE
+  buzzerPreset: 'STANDARD'
 };
 let availableVoices = [];
 
@@ -44,7 +47,56 @@ let activePage = 'topMenuPage';
 let camStream = null;
 let isCamRunning = false;
 
-// ソフトキーボード強制クローズ（画面遷移時にキーボードを開かせない）
+// =========================================================
+// 🗄️ IndexedDB 非同期ラッパー（容量無制限ストレージ）
+// =========================================================
+function openAppDatabase() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains(DB_STORE)) {
+        db.createObjectStore(DB_STORE);
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbGet(key) {
+  const db = await openAppDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DB_STORE, 'readonly');
+    const store = tx.objectStore(DB_STORE);
+    const req = store.get(key);
+    req.onsuccess = () => resolve(req.result !== undefined ? req.result : null);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbSet(key, val) {
+  const db = await openAppDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DB_STORE, 'readwrite');
+    const store = tx.objectStore(DB_STORE);
+    const req = store.put(val, key);
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbDelete(key) {
+  const db = await openAppDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DB_STORE, 'readwrite');
+    const store = tx.objectStore(DB_STORE);
+    const req = store.delete(key);
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+  });
+}
+
 function blurActiveInput() {
   if (document.activeElement && ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName)) {
     document.activeElement.blur();
@@ -56,10 +108,11 @@ function normalizeCodeString(str) {
   return String(str).normalize('NFKC').trim();
 }
 
-function loadSavedConfigs() {
+async function loadSavedConfigs() {
   try {
-    csvTableA = JSON.parse(localStorage.getItem(TABLE_A_KEY) || '{}');
-    csvTableB = JSON.parse(localStorage.getItem(TABLE_B_KEY) || '{}');
+    csvTableA = (await idbGet(TABLE_A_KEY)) || {};
+    csvTableB = (await idbGet(TABLE_B_KEY)) || {};
+
     qrRangeConfig = JSON.parse(localStorage.getItem(QR_CONFIG_KEY) || '{"start":null,"end":null}');
     if (qrRangeConfig.start) document.getElementById('numQrStart').value = qrRangeConfig.start;
     if (qrRangeConfig.end) document.getElementById('numQrEnd').value = qrRangeConfig.end;
@@ -69,13 +122,13 @@ function loadSavedConfigs() {
       audioConfig = Object.assign(audioConfig, savedAudio);
     }
     applyAudioConfigToUI();
-  } catch (e) {}
+  } catch (e) {
+    console.error('Config load failed:', e);
+  }
   initSpeechVoices();
 }
 
-// =========================================================
-// 🔊 音声（話者・速度・高さ・音量）＆ ブザー効果音カスタマイズ
-// =========================================================
+// 音声・ブザー制御
 function initSpeechVoices() {
   if (!('speechSynthesis' in window)) return;
   const populate = () => {
@@ -170,15 +223,14 @@ function playTone(freq, dur, type = 'sine', delayMs = 0) {
   }, delayMs);
 }
 
-// プリセット対応のOK/NGブザー音再生
 function playBuzzerPattern(kind) {
   const preset = audioConfig.buzzerPreset || 'STANDARD';
   if (preset === 'MUTE') return;
 
   if (kind === 'OK' || kind === 'COMPLETE') {
     if (preset === 'CHIME') {
-      playTone(659.25, 0.16, 'sine', 0);   // ミ
-      playTone(523.25, 0.28, 'sine', 150); // ド
+      playTone(659.25, 0.16, 'sine', 0);
+      playTone(523.25, 0.28, 'sine', 150);
     } else if (preset === 'DOUBLE') {
       playTone(1500, 0.08, 'sine', 0);
       playTone(1500, 0.10, 'sine', 100);
@@ -186,7 +238,6 @@ function playBuzzerPattern(kind) {
       playTone(1400, 0.14, 'sine', 0);
     }
   } else {
-    // NG時
     if (preset === 'CHIME') {
       playTone(240, 0.22, 'sawtooth', 0);
       playTone(200, 0.35, 'sawtooth', 220);
@@ -211,9 +262,6 @@ function testVoiceAndBuzzer(type) {
   }
 }
 
-// =========================================================
-// QRコード専用 桁数切り出し設定
-// =========================================================
 function applyQrSubstring(rawStr, isQrFormat) {
   const norm = normalizeCodeString(rawStr);
   if (!isQrFormat) return norm;
@@ -247,9 +295,6 @@ function resetQrRangeConfig() {
   alert('QRコードの桁数設定を解除しました（全桁読取）。');
 }
 
-// =========================================================
-// 実績カウンター・背面ライト・CSVログ出力
-// =========================================================
 async function toggleTorch() {
   const stream = camStream || window.partOcrStream;
   if (!stream) return alert('カメラ起動中に使用できます');
