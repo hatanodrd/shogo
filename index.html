@@ -3,1022 +3,347 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>ポカヨケ照合システム (OCR枠スリム版)</title>
+  <!-- 全画面Webアプリ化（アドレスバー非表示） -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="ポカヨケ検査">
+  <meta name="mobile-web-app-capable" content="yes">
+  <title>AI画像検査＆ポカヨケ照合システム (モジュール分割版)</title>
+
+  <!-- 外部AI・認識ライブラリ -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.18.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/mobilenet@2.1.0"></script>
   <script src="https://unpkg.com/html5-qrcode"></script>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
-  <style>
-    :root {
-      --primary: #1976d2;
-      --success: #2e7d32;
-      --error: #d32f2f;
-      --bg: #f5f5f5;
-      --card-bg: #ffffff;
-      --text: #212121;
-    }
 
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      user-select: none;
-    }
-
-    body {
-      background-color: var(--bg);
-      color: var(--text);
-      display: flex;
-      flex-direction: column;
-      height: 100vh;
-      overflow: hidden;
-    }
-
-    header {
-      background: var(--primary);
-      color: white;
-      padding: 10px 16px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    }
-
-    header h1 { font-size: 1.1rem; }
-
-    .header-btns button {
-      background: white;
-      color: var(--primary);
-      border: none;
-      padding: 6px 12px;
-      border-radius: 4px;
-      font-weight: bold;
-      font-size: 0.8rem;
-      cursor: pointer;
-      margin-left: 6px;
-    }
-
-    main {
-      flex: 1;
-      padding: 10px 12px;
-      overflow-y: auto;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-
-    .card {
-      background: var(--card-bg);
-      border-radius: 8px;
-      padding: 12px;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.06);
-    }
-
-    .status-banner {
-      background: #e3f2fd;
-      border-left: 5px solid var(--primary);
-      padding: 8px 12px;
-      font-size: 0.95rem;
-      font-weight: bold;
-      color: #0d47a1;
-      transition: background 0.3s;
-    }
-
-    .parent-info {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      background: #fff8e1;
-      border: 1px solid #ffe082;
-      padding: 8px 12px;
-      border-radius: 6px;
-    }
-    .parent-code {
-      font-size: 1.2rem;
-      font-weight: bold;
-      color: #b78103;
-    }
-
-    .camera-container {
-      position: relative;
-      width: 100%;
-      max-width: 420px;
-      margin: 0 auto;
-      aspect-ratio: 4 / 3;
-      background: #000;
-      border-radius: 8px;
-      overflow: hidden;
-      display: none;
-    }
-
-    #qrVideoReader {
-      width: 100% !important;
-      height: 100% !important;
-      border: none !important;
-    }
-    #qrVideoReader video {
-      object-fit: fill !important;
-      border-radius: 8px;
-    }
-
-    #ocrVideo {
-      width: 100%;
-      height: 100%;
-      object-fit: fill;
-    }
-
-    /* ★ OCRターゲット枠（縦幅を狭く調整：34px） ★ */
-    .ocr-scan-box {
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      width: 75%;
-      height: 34px;
-      border: 2px solid #00e676;
-      border-radius: 4px;
-      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.5);
-      pointer-events: none;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      z-index: 10;
-    }
-    .ocr-scan-box span.guide-text {
-      position: absolute;
-      top: -20px;
-      color: #00e676;
-      font-size: 0.7rem;
-      font-weight: bold;
-      background: rgba(0,0,0,0.7);
-      padding: 1px 6px;
-      border-radius: 3px;
-      white-space: nowrap;
-    }
-
-    .crop-preview-box {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      background: #eee;
-      padding: 4px 8px;
-      border-radius: 4px;
-      font-size: 0.75rem;
-      color: #555;
-    }
-    #ocrCanvas {
-      width: 80px;
-      height: 16px;
-      border: 1px solid #999;
-      background: #fff;
-    }
-
-    .child-list {
-      list-style: none;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      margin-top: 6px;
-      max-height: 180px;
-      overflow-y: auto;
-    }
-
-    .child-item {
-      padding: 10px 12px;
-      background: #ffffff;
-      border: 2px solid #cfd8dc;
-      border-radius: 6px;
-      font-size: 1.05rem;
-      font-weight: bold;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      transition: all 0.25s ease;
-    }
-
-    .child-item.matched {
-      background: #e0e0e0 !important;
-      border-color: #9e9e9e !important;
-      color: #757575 !important;
-      text-decoration: line-through;
-    }
-    .child-item.matched .status-tag {
-      color: #2e7d32 !important;
-      font-weight: bold;
-      text-decoration: none;
-    }
-
-    .input-section {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-    }
-
-    .input-row {
-      display: flex;
-      gap: 6px;
-    }
-
-    input[type="text"], input[type="number"] {
-      flex: 1;
-      padding: 10px 12px;
-      font-size: 1rem;
-      border: 2px solid #90caf9;
-      border-radius: 6px;
-      outline: none;
-      background: #fff;
-    }
-    input[type="text"]:focus, input[type="number"]:focus {
-      border-color: var(--primary);
-      background: #e3f2fd;
-    }
-
-    .btn {
-      padding: 10px 14px;
-      font-size: 0.9rem;
-      font-weight: bold;
-      border: none;
-      border-radius: 6px;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 4px;
-    }
-    .btn-primary { background: var(--primary); color: white; }
-    .btn-reset { background: #757575; color: white; }
-    .btn-cam { background: #00897b; color: white; }
-    .btn-ocr { background: #8e24aa; color: white; }
-
-    .overlay {
-      position: fixed;
-      inset: 0;
-      display: none;
-      flex-direction: column;
-      justify-content: center;
-      align-items: center;
-      z-index: 100;
-      color: white;
-      text-align: center;
-      padding: 20px;
-      cursor: pointer;
-    }
-
-    .overlay.ng {
-      background: rgba(211, 47, 47, 0.96);
-      animation: shake 0.2s 3;
-    }
-    .overlay.complete {
-      background: rgba(46, 125, 50, 0.96);
-    }
-
-    .overlay h2 { font-size: 3rem; margin-bottom: 12px; }
-    .overlay p { font-size: 1.2rem; margin-bottom: 20px; }
-    .overlay .sub { font-size: 0.9rem; opacity: 0.8; }
-
-    .modal {
-      position: fixed;
-      inset: 0;
-      background: rgba(0,0,0,0.5);
-      display: none;
-      justify-content: center;
-      align-items: center;
-      z-index: 90;
-      padding: 16px;
-    }
-    .modal-content {
-      background: white;
-      border-radius: 8px;
-      max-width: 500px;
-      width: 100%;
-      max-height: 85vh;
-      overflow-y: auto;
-      padding: 18px;
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-    }
-    .modal-content h3 { border-bottom: 2px solid var(--primary); padding-bottom: 6px; }
-
-    @keyframes shake {
-      0%, 100% { transform: translateX(0); }
-      25% { transform: translateX(-15px); }
-      75% { transform: translateX(15px); }
-    }
-  </style>
+  <!-- 分割スタイルシート -->
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
+  <div id="borderFlash"></div>
+  <!-- iOS16以下用バーコード解析フォールバック要素 -->
+  <div id="hiddenReaderFallback" style="display:none;"></div>
+
+  <!-- 共通ヘッダー -->
   <header>
-    <h1>ポカヨケ照合</h1>
-    <div class="header-btns">
-      <button onclick="openModal('logModal')">履歴</button>
-      <button onclick="openModal('settingModal')">マスタ設定</button>
+    <div class="header-title">
+      <span>🛡️ AI画像検査＆照合ポカヨケシステム</span>
+    </div>
+    <div class="header-controls">
+      <button class="btn" id="btnSpeechToggle" onclick="toggleSpeech()">🔊 音声: ON</button>
+      <button class="btn" id="btnTorchToggle" onclick="toggleTorch()">🔦 ライト</button>
+      <button class="btn" id="btnBackToPartScan" style="display:none;" onclick="navigateTo('partScanPage')">🔙 品番読取へ戻る</button>
+      <button class="btn btn-dark" id="btnBackToTop" style="display:none;" onclick="navigateTo('topMenuPage')">🏠 トップへ戻る</button>
     </div>
   </header>
 
-  <main>
-    <div class="status-banner" id="statusBanner">
-      親品番をスキャンしてください
+  <!-- 作業者ID ＆ リアルタイム検査実績バー -->
+  <div class="status-bar">
+    <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+      <span>担当者: <strong id="lblWorker" style="color:var(--danger);">未登録</strong></span>
+      <input type="text" id="txtWorkerInput" placeholder="作業者ID" style="width:100px; padding:4px 6px; font-size:0.85rem;">
+      <button class="btn btn-primary" style="padding:4px 8px; font-size:0.78rem;" onclick="registerWorker()">登録</button>
     </div>
-
-    <div class="card parent-info" id="parentSection" style="display: none;">
-      <div>
-        <div style="font-size:0.75rem; color:#666;">照合中 親品番:</div>
-        <div class="parent-code" id="displayParentCode">-</div>
-      </div>
-      <button class="btn btn-reset" onclick="resetProcess()">中断/リセット</button>
+    <div class="counter-group">
+      <span class="cnt-ok">OK: <span id="cntOkVal">0</span></span>
+      <span class="cnt-ng">NG: <span id="cntNgVal">0</span></span>
+      <span>合格率: <span id="cntRateVal">0%</span></span>
+      <button class="btn" style="padding:3px 8px; font-size:0.75rem;" onclick="exportLogsCSV()">📊 CSVログ出力</button>
     </div>
+  </div>
 
-    <div class="camera-container" id="cameraBox">
-      <div id="qrVideoReader"></div>
-
-      <video id="ocrVideo" playsinline autoplay muted style="display:none;"></video>
-      <div class="ocr-scan-box" id="ocrScanBox" style="display:none;">
-        <span class="guide-text">枠内に文字を合わせてください</span>
-        <span id="ocrLivePreview" style="font-size:0.75rem; color:#ffeb3b; background:transparent;"></span>
-      </div>
-
-      <button class="btn btn-reset" style="position:absolute; top:6px; right:6px; z-index:30; padding:4px 10px; font-size:0.75rem;" onclick="stopAllCameras()">カメラ停止</button>
-    </div>
-
-    <!-- 読取位置確認用（プレビューバー） -->
-    <div class="crop-preview-box" id="cropPreviewContainer" style="display:none;">
-      <span>読取中心部:</span>
-      <canvas id="ocrCanvas"></canvas>
-      <span id="ocrStatusText" style="margin-left:auto; font-weight:bold; color:var(--primary);">解析中...</span>
-    </div>
-
-    <div class="card" id="childSection" style="display: none;">
-      <div style="display:flex; justify-content:space-between; align-items:center;">
-        <span style="font-weight:bold; font-size:0.95rem;">子品番リスト:</span>
-        <span id="remainingCount" style="color:var(--primary); font-weight:bold; font-size:0.95rem;">残り 0 / 0</span>
-      </div>
-      <ul class="child-list" id="childList"></ul>
-    </div>
-
-    <div class="card input-section">
-      <div class="input-row">
-        <input type="text" id="scanInput" placeholder="スキャナ読取 / 手入力" autocomplete="off">
-        <button class="btn btn-primary" onclick="handleManualInput()">確定</button>
-      </div>
-      <div class="input-row">
-        <button class="btn btn-cam" style="flex:1;" onclick="startLiveBarcodeScan()">📷 バーコード/QR</button>
-        <button class="btn btn-ocr" style="flex:1;" onclick="startLiveOCRScan()">🔤 文字(OCR)読取</button>
+  <!-- =========================================================
+       🏠 1. トップメニュー画面
+       ========================================================= -->
+  <main class="page-view active" id="topMenuPage">
+    <div class="card">
+      <div class="card-title">メニューを選択してください</div>
+      <p style="font-size:0.88rem; color:var(--muted); margin-bottom:10px;">
+        現在登録されている品番数: <strong id="topRegisteredCount" style="color:var(--primary); font-size:1.05rem;">0</strong> 件
+        （Aの表: <span id="topBadgeA">未読込</span> ／ Bの表: <span id="topBadgeB">未読込</span>）
+      </p>
+      <div class="menu-grid">
+        <button class="btn btn-primary menu-hero-btn" onclick="navigateTo('partScanPage')">
+          <span>🔍 検査を開始する（作業者用）</span>
+          <span class="sub">QR / バーコード / 文字(OCR) / プルダウンから品番を読み取り、順番ステップ検査を開始します</span>
+        </button>
+        <button class="btn btn-dark menu-hero-btn" onclick="navigateTo('adminPage')">
+          <span>⚙️ 検査項目の登録・システム設定（管理者用）</span>
+          <span class="sub">A表・B表（CSV）自動連携、音声カスタマイズ、QR桁数設定、🥐パン屋AIや追加コードの設定を行います</span>
+        </button>
       </div>
     </div>
   </main>
 
-  <div class="overlay ng" id="ngOverlay" onclick="dismissNG()">
-    <h2>⚠️ NG</h2>
-    <p id="ngMessage">誤った品番です！</p>
-    <div class="sub">画面をタップして照合を再開</div>
-  </div>
-
-  <div class="overlay complete" id="completeOverlay" onclick="dismissComplete()">
-    <h2>🎉 完了</h2>
-    <p>すべての子品番の照合が完了しました！</p>
-    <div class="sub">画面をタップして次の照合へ</div>
-  </div>
-
-  <!-- マスタ設定モーダル -->
-  <div class="modal" id="settingModal">
-    <div class="modal-content">
-      <h3>マスタファイル・読取設定</h3>
-
-      <div>
-        <label style="font-weight:bold; font-size:0.9rem; color:var(--primary);">QRコード読取桁数制限 (先頭からの桁数):</label>
-        <div style="display:flex; gap:8px; margin-top:6px; align-items:center;">
-          <input type="number" id="qrLengthLimit" placeholder="例: 8 (空欄=全桁読取)" min="1" max="50">
-          <button class="btn btn-primary" style="padding:8px 12px;" onclick="saveQrLimitSetting()">設定保存</button>
-        </div>
-        <div style="font-size:0.75rem; color:#666; margin-top:4px;">
-          ※QR読取時のみ先頭から指定文字数だけ抽出します（空欄時は全桁読取）
-        </div>
-      </div>
-      <hr>
-
-      <div>
-        <label style="font-weight:bold; font-size:0.9rem;">1. CSVファイルを直接選択 (UTF-8 / Shift-JIS自動判別):</label>
-        <input type="file" id="csvFileInput" accept=".csv" style="margin-top:6px; width:100%;">
-      </div>
-      <hr>
-      <div>
-        <label style="font-weight:bold; font-size:0.9rem;">2. Googleドライブ公開CSV URLから同期:</label>
-        <input type="text" id="gdriveUrl" placeholder="https://docs.google.com/spreadsheets/d/.../export?format=csv" style="margin-top:6px; width:100%;">
-        <button class="btn btn-primary" style="margin-top:8px; width:100%;" onclick="syncGDrive()">Googleドライブから取得</button>
-      </div>
-      <div style="font-size:0.8rem; color:#666;">
-        ※マスター登録件数: <span id="masterCount">0</span> 件
-      </div>
-      <button class="btn btn-reset" onclick="closeModal('settingModal')">閉じる</button>
+  <!-- =========================================================
+       🔍 2. 品番読み取り・選択画面（作業者用）
+       ========================================================= -->
+  <main class="page-view" id="partScanPage">
+    <div class="nav-banner">
+      ① 指示書・現品票の「品番」を読み取るか、リストから選択してください
     </div>
-  </div>
 
-  <div class="modal" id="logModal">
-    <div class="modal-content">
-      <h3>照合ログ履歴</h3>
-      <div style="max-height:250px; overflow-y:auto; border:1px solid #ccc; padding:8px; font-size:0.8rem;" id="logContainer"></div>
-      <button class="btn btn-primary" onclick="exportLogsCSV()">CSVダウンロード</button>
-      <button class="btn btn-reset" onclick="clearLogs()">ログ消去</button>
-      <button class="btn btn-reset" onclick="closeModal('logModal')">閉じる</button>
+    <div class="card">
+      <div class="card-title">① カメラまたは外付けリーダーで品番読取</div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
+        <button class="btn btn-primary" style="flex:1;" onclick="startPartQrScanner()">📷 QR / バーコード読取</button>
+        <button class="btn btn-warning" style="flex:1;" onclick="startPartOcrScanner()">🔤 文字(OCR)で品番読取</button>
+        <button class="btn btn-danger" id="btnStopScanCam" style="display:none;" onclick="stopPartScanCameras()">⏹ カメラ停止</button>
+      </div>
+
+      <div style="display:flex; gap:8px; margin-bottom:10px;">
+        <input type="text" id="externalPartInput" placeholder="手入力時はここをタップ (外付けリーダーはそのまま読取可)" style="flex:1;" autocomplete="off">
+        <button class="btn btn-primary" onclick="submitExternalPartInput()">検査開始</button>
+      </div>
+
+      <div class="scan-cam-box" id="scanCamBox">
+        <div id="qrReaderPart" style="width:100%; height:100%;"></div>
+        <video id="partOcrVideo" playsinline autoplay muted></video>
+        <div id="ocrRoiGuide">
+          <div id="ocrRoiBadge">文字を緑枠内に合わせてください</div>
+        </div>
+      </div>
+
+      <!-- 影除去OCR 調整スライダー -->
+      <div class="ocr-slider-panel" id="ocrSliderPanel">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+          <strong style="color:var(--primary-dark);">🔤 影除去OCR 調整パネル</strong>
+          <button class="btn btn-success" style="padding:4px 10px; font-size:0.8rem;" onclick="recognizeOcrOnceNow()">📸 今すぐ枠内を読取</button>
+        </div>
+        <div class="slider-row">
+          <label>📏 検査枠の横幅 (<span id="lblOcrW">75</span>%):</label>
+          <input type="range" id="rngOcrW" min="25" max="95" value="75" oninput="updateOcrRoiStyle()">
+        </div>
+        <div class="slider-row">
+          <label>↕️ 検査枠の高さ (<span id="lblOcrH">14</span>%):</label>
+          <input type="range" id="rngOcrH" min="8" max="35" value="14" oninput="updateOcrRoiStyle()">
+        </div>
+        <div class="slider-row">
+          <label>☀️ 影除去感度 (<span id="lblOcrShadow">14</span>):</label>
+          <input type="range" id="rngOcrShadow" min="5" max="35" value="14" oninput="document.getElementById('lblOcrShadow').textContent=this.value">
+        </div>
+        <div style="display:flex; align-items:center; gap:8px; margin-top:4px;">
+          <span style="font-size:0.75rem; color:var(--muted);">二値化プレビュー:</span>
+          <canvas id="ocrDebugCanvas" height="36" style="border:1px solid #90a4ae; background:#fff; max-width:220px;"></canvas>
+        </div>
+      </div>
     </div>
+
+    <div class="card">
+      <div class="card-title">② コードが無い場合：登録済み品番リストから呼び出す</div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <select id="selWorkerProfile" style="flex:1;">
+          <option value="">-- 登録済み品番を選択 --</option>
+        </select>
+        <button class="btn btn-success" onclick="startInspectionFromDropdown()">🚀 選択した品番で検査開始 ➔</button>
+      </div>
+    </div>
+  </main>
+
+  <!-- =========================================================
+       🔍 3. 順番ステップ検査専用画面（作業者用）
+       ========================================================= -->
+  <main class="page-view" id="inspectPage">
+    <div class="card" style="padding:10px 14px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; margin-bottom:6px;">
+        <div>
+          <span style="font-size:0.8rem; color:var(--muted);">検査中品番:</span>
+          <strong id="lblActivePart" style="font-size:1.25rem; color:var(--primary-dark); margin-left:6px;">---</strong>
+        </div>
+        <span id="lblStepProgress" style="font-weight:700; color:var(--primary);">Step 1 / 1</span>
+      </div>
+      <div class="step-Indicator-bar" id="stepIndicatorBar"></div>
+      <div class="nav-banner" id="stepInstructionBanner">
+        👉 Step 1 / 1 ：【 外箱 】のコードを読み取ってください
+      </div>
+    </div>
+
+    <div class="card" id="workerBarcodeInputBox" style="padding:10px 14px;">
+      <div style="display:flex; gap:8px; align-items:center;">
+        <input type="text" id="workerStepBarcodeInput" placeholder="手入力時はここをタップ (外付けリーダーはそのまま読取可)" style="flex:1;" autocomplete="off">
+        <button class="btn btn-primary" id="btnWorkerBarcodeSubmit" onclick="handleWorkerBarcodeInput()">照合</button>
+      </div>
+    </div>
+
+    <div class="card" style="display:flex; flex-direction:column; gap:10px;">
+      <div class="viewport-box">
+        <div id="aiLiveBadge">AI準備中...</div>
+        <video id="videoSource" playsinline autoplay muted style="display:none;"></video>
+        <canvas id="mainCanvas" width="640" height="480"></canvas>
+      </div>
+
+      <button class="btn btn-success" id="btnExecuteStep" style="padding:16px; font-size:1.15rem;" onclick="executeCurrentStepInspection()">
+        🔍 このステップを検査 (タップ / Space)
+      </button>
+    </div>
+  </main>
+
+  <!-- =========================================================
+       ⚙️ 4. 検査項目の登録・システム設定画面（管理者用）
+       ========================================================= -->
+  <main class="page-view" id="adminPage">
+
+    <!-- ① CSV対応一覧表の取込（Aの表 × Bの表 自動連携 ＋ リセット） -->
+    <div class="card">
+      <div class="card-title">① CSV対応一覧表の取込（Aの表 × Bの表 自動連携 ／ UTF-8・Shift-JIS自動判別）</div>
+      <p style="font-size:0.82rem; color:var(--muted); margin-bottom:10px;">
+        <strong>Aの表</strong>（1行目見出し / A列:品番 / F列:コード値 / 下の行から外箱➔内箱➔小箱）と、<strong>Bの表</strong>（1行目見出し / A列:品番 / B列:外箱参照先 / C列:内箱参照先 / D列:小箱参照先）を読み込み、照合回数と対象箱を自動判定します。
+      </p>
+
+      <div class="csv-grid">
+        <div class="csv-card" id="cardCsvA">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <strong>📄 Aの表（品番・バーコード対応表）</strong>
+            <span id="statusCsvA" style="font-size:0.78rem; font-weight:700; color:var(--muted);">未読込</span>
+          </div>
+          <div style="font-size:0.78rem; color:var(--muted);">A列: 品番 ／ F列: バーコード値（下から順）</div>
+          <input type="file" id="fileCsvA" accept=".csv" onchange="handleCsvFileSelect(event, 'A')">
+        </div>
+
+        <div class="csv-card" id="cardCsvB">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <strong>📄 Bの表（品番・各箱ラベル参照先表）</strong>
+            <span id="statusCsvB" style="font-size:0.78rem; font-weight:700; color:var(--muted);">未読込</span>
+          </div>
+          <div style="font-size:0.78rem; color:var(--muted);">A列: 品番 ／ B列: 外箱 ／ C列: 内箱 ／ D列: 小箱</div>
+          <input type="file" id="fileCsvB" accept=".csv" onchange="handleCsvFileSelect(event, 'B')">
+        </div>
+      </div>
+
+      <div style="margin-top:10px; display:flex; justify-content:flex-end;">
+        <button class="btn btn-danger" onclick="resetCsvMasterData()">🗑️ 読み込んだCSV(A表・B表)をリセット</button>
+      </div>
+    </div>
+
+    <!-- ② 🔊 音声アナウンス・効果音カスタマイズ設定 -->
+    <div class="card">
+      <div class="card-title">② 🔊 音声アナウンス・ブザー効果音の設定</div>
+      <div class="voice-grid">
+        <div style="display:flex; flex-direction:column; gap:8px;">
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <label style="font-size:0.85rem; font-weight:700; width:110px;">声の種類(話者):</label>
+            <select id="selVoiceURI" style="flex:1; min-width:180px;" onchange="saveAudioSettings()"></select>
+          </div>
+          <div class="slider-row">
+            <label>⏩ 読み上げ速度 (<span id="lblVoiceRate">1.15</span>x):</label>
+            <input type="range" id="rngVoiceRate" min="0.6" max="1.8" step="0.05" value="1.15" oninput="onAudioSliderChange()">
+          </div>
+          <div class="slider-row">
+            <label>🎵 声の高さ (<span id="lblVoicePitch">1.0</span>):</label>
+            <input type="range" id="rngVoicePitch" min="0.5" max="1.6" step="0.05" value="1.0" oninput="onAudioSliderChange()">
+          </div>
+          <div class="slider-row">
+            <label>🔊 音量 (<span id="lblVoiceVol">100</span>%):</label>
+            <input type="range" id="rngVoiceVol" min="10" max="100" step="5" value="100" oninput="onAudioSliderChange()">
+          </div>
+        </div>
+
+        <div style="display:flex; flex-direction:column; gap:8px; justify-content:space-between;">
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <label style="font-size:0.85rem; font-weight:700; width:120px;">ブザー音パターン:</label>
+            <select id="selBuzzerPreset" style="flex:1;" onchange="saveAudioSettings()">
+              <option value="STANDARD">標準ビープ（ピッ / ブー）</option>
+              <option value="CHIME">チャイム風（ピンポーン / ブッブー）</option>
+              <option value="DOUBLE">2連電子音（ピピッ / ピピピッ）</option>
+              <option value="MUTE">ブザー音なし（読み上げのみ）</option>
+            </select>
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:auto;">
+            <button class="btn btn-primary" style="flex:1;" onclick="testVoiceAndBuzzer('OK')">🔊 合格ボイス＆音テスト</button>
+            <button class="btn btn-danger" style="flex:1;" onclick="testVoiceAndBuzzer('NG')">🔊 NGボイス＆音テスト</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ③ システム共通・QRコード読取桁数設定 -->
+    <div class="card">
+      <div class="card-title">③ システム共通・QRコード専用の読取桁数設定（何桁目〜何桁目まで）</div>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <label style="font-size:0.85rem; font-weight:700;">開始位置(何桁目から):</label>
+        <input type="number" id="numQrStart" placeholder="例: 1" min="1" style="width:90px;">
+        <label style="font-size:0.85rem; font-weight:700;">〜 終了位置(何桁目まで):</label>
+        <input type="number" id="numQrEnd" placeholder="例: 12" min="1" style="width:90px;">
+        <button class="btn btn-primary" onclick="saveQrRangeConfig()">設定保存</button>
+        <button class="btn" onclick="resetQrRangeConfig()">全桁読取に戻す</button>
+      </div>
+    </div>
+
+    <!-- ④ 品番別の検査ステップ確認・カメラ検査の追加紐づけ -->
+    <div class="card">
+      <div class="card-title">④ 品番別の検査ステップ確認・カメラ検査（🥐パン屋AI / 📷追加コード）の追加紐づけ</div>
+
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
+        <select id="selAdminProfile" style="flex:1; min-width:200px;" onchange="loadAdminProfile(this.value)">
+          <option value="">-- 編集・確認する品番を選択 --</option>
+        </select>
+        <input type="text" id="txtNewProfileName" placeholder="新規品番名を入力" style="width:170px;">
+        <button class="btn btn-primary" onclick="createOrSwitchAdminProfile()">新規作成 / 切替</button>
+        <button class="btn btn-danger" onclick="deleteAdminProfile()">この品番を削除</button>
+      </div>
+
+      <div class="admin-layout">
+        <div style="display:flex; flex-direction:column; gap:8px;">
+          <div style="display:flex; gap:6px; flex-wrap:wrap;">
+            <button class="btn btn-primary" id="btnAdminCam" onclick="toggleAdminCamera()">📷 設定用カメラ起動</button>
+            <button class="btn" onclick="setSelectedStepFullFrame()">🔲 枠をカメラ全体(100%)に戻す</button>
+            <button class="btn" onclick="duplicateSelectedStep()">📋 選択枠を複製</button>
+          </div>
+
+          <div class="viewport-box">
+            <canvas id="adminCanvas" width="640" height="480"></canvas>
+          </div>
+
+          <div style="display:flex; gap:4px; flex-wrap:wrap; justify-content:center;">
+            <button class="btn" onclick="nudgeAdminStep(-10,0,0,0)">← 左</button>
+            <button class="btn" onclick="nudgeAdminStep(10,0,0,0)">→ 右</button>
+            <button class="btn" onclick="nudgeAdminStep(0,-10,0,0)">↑ 上</button>
+            <button class="btn" onclick="nudgeAdminStep(0,10,0,0)">↓ 下</button>
+            <button class="btn" onclick="nudgeAdminStep(0,0,15,0)">幅＋</button>
+            <button class="btn" onclick="nudgeAdminStep(0,0,-15,0)">幅－</button>
+            <button class="btn" onclick="nudgeAdminStep(0,0,0,15)">高＋</button>
+            <button class="btn" onclick="nudgeAdminStep(0,0,0,-15)">高－</button>
+          </div>
+        </div>
+
+        <div style="display:flex; flex-direction:column; gap:8px;">
+          <div style="display:flex; gap:6px; flex-wrap:wrap;">
+            <button class="btn btn-ai" style="flex:1;" onclick="addAdminCustomStep('BAKERY')">＋ 🥐 カメラ検査(パン屋AI)を追加</button>
+            <button class="btn btn-primary" style="flex:1;" onclick="addAdminCustomStep('BARCODE')">＋ 📷 CSV外のコード検査を追加</button>
+          </div>
+
+          <div id="adminStepsContainer" style="max-height:430px; overflow-y:auto; padding-right:4px;"></div>
+
+          <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:auto;">
+            <button class="btn btn-success" style="flex:1;" onclick="saveCurrentAdminProfileExplicit()">💾 この品番の設定を保存</button>
+            <button class="btn" onclick="exportAllProfilesJson()">📤 JSON書出</button>
+            <input type="file" id="fileImportJson" accept=".json" style="display:none;" onchange="importAllProfilesJson(event)">
+            <button class="btn" onclick="document.getElementById('fileImportJson').click()">📥 JSON読込</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- ポカヨケNG全画面ロック -->
+  <div class="fullscreen-overlay ng" id="ngOverlay">
+    <h1 style="font-size:3rem; margin-bottom:12px;">⚠️ 検査 NG</h1>
+    <p id="ngOverlayReason" style="font-size:1.25rem; margin-bottom:24px; white-space:pre-line;"></p>
+    <button class="btn" style="padding:14px 32px; font-size:1.1rem; color:var(--danger); border-color:#fff;" onclick="unlockNgOverlay()">確認して解除</button>
   </div>
 
-  <script>
-    let masterData = {};
-    let currentStep = 'PARENT';
-    let currentParent = '';
-    let currentChildItems = [];
-    let currentCameraMode = null;
-
-    let isCoolDown = false;
-    let lastScannedCode = '';
-    let lastScannedTime = 0;
-
-    let html5QrCode = null;
-    let ocrStream = null;
-    let ocrTimer = null;
-    let isOcrProcessing = false;
-    let ocrWorker = null;
-
-    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-
-    function playBeep(freq, duration, type = 'sine') {
-      try {
-        if (audioCtx.state === 'suspended') audioCtx.resume();
-        const osc = audioCtx.createOscillator();
-        const gain = audioCtx.createGain();
-        osc.type = type;
-        osc.frequency.value = freq;
-        osc.connect(gain);
-        gain.connect(audioCtx.destination);
-        osc.start();
-        gain.gain.exponentialRampToValueAtTime(0.00001, audioCtx.currentTime + duration);
-        osc.stop(audioCtx.currentTime + duration);
-      } catch (e) {}
-    }
-
-    function notifyOK() {
-      playBeep(1200, 0.15);
-      setTimeout(() => playBeep(1600, 0.15), 100);
-      if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
-    }
-
-    function notifyNG() {
-      playBeep(300, 0.4, 'square');
-      if (navigator.vibrate) navigator.vibrate([400, 100, 400]);
-    }
-
-    function notifyComplete() {
-      playBeep(880, 0.15);
-      setTimeout(() => playBeep(1174, 0.15), 120);
-      setTimeout(() => playBeep(1760, 0.3), 240);
-      if (navigator.vibrate) navigator.vibrate([200, 100, 200, 100, 400]);
-    }
-
-    const scanInput = document.getElementById('scanInput');
-    scanInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        const val = scanInput.value.trim();
-        if (val) processScan(val);
-        scanInput.value = '';
-      }
-    });
-
-    function keepFocus() {
-      const isCameraActive = document.getElementById('cameraBox').style.display === 'block';
-      if (isCameraActive) {
-        if (document.activeElement === scanInput) {
-          scanInput.blur();
-        }
-      }
-    }
-    document.addEventListener('click', keepFocus);
-
-    function handleManualInput() {
-      const val = scanInput.value.trim();
-      if (val) processScan(val);
-      scanInput.value = '';
-    }
-
-    function processScan(code) {
-      code = code.trim();
-      if (!code) return;
-
-      const now = Date.now();
-      if (isCoolDown || (code === lastScannedCode && (now - lastScannedTime < 1500))) {
-        return;
-      }
-
-      if (currentStep === 'PARENT') {
-        if (masterData[code]) {
-          currentParent = code;
-          currentChildItems = masterData[code].map(c => ({ code: c, matched: false }));
-          currentStep = 'CHILD';
-          notifyOK();
-          updateUI();
-          addLog(currentParent, '-', '親品番読取OK');
-          setScanCoolDown(code);
-        } else {
-          notifyNG();
-          showNG(`親品番 [${code}] はマスタに未登録です`);
-          addLog(code, '-', '親品番NG (未登録)');
-        }
-      } else if (currentStep === 'CHILD') {
-        const target = currentChildItems.find(item => item.code === code && !item.matched);
-
-        if (target) {
-          target.matched = true;
-          notifyOK();
-          addLog(currentParent, code, '子品番OK');
-          setScanCoolDown(code);
-
-          const remaining = currentChildItems.filter(i => !i.matched).length;
-          updateUI();
-
-          if (remaining === 0) {
-            setTimeout(() => {
-              notifyComplete();
-              showComplete();
-              addLog(currentParent, '-', '全子品番照合完了');
-            }, 300);
-          }
-        } else {
-          const isAlreadyMatched = currentChildItems.some(item => item.code === code && item.matched);
-          notifyNG();
-          if (isAlreadyMatched) {
-            showNG(`子品番 [${code}] は既に照合済みです`);
-            addLog(currentParent, code, '子品番NG (重複読取)');
-          } else {
-            showNG(`誤った子品番: [${code}]`);
-            addLog(currentParent, code, '子品番NG (不一致)');
-          }
-        }
-      }
-    }
-
-    function setScanCoolDown(code) {
-      isCoolDown = true;
-      lastScannedCode = code;
-      lastScannedTime = Date.now();
-      setTimeout(() => {
-        isCoolDown = false;
-      }, 1000);
-    }
-
-    function updateUI() {
-      const banner = document.getElementById('statusBanner');
-      const parentSec = document.getElementById('parentSection');
-      const childSec = document.getElementById('childSection');
-      const childList = document.getElementById('childList');
-      const remainingCount = document.getElementById('remainingCount');
-
-      if (currentStep === 'PARENT') {
-        banner.textContent = '親品番をスキャンしてください';
-        banner.style.background = '#e3f2fd';
-        parentSec.style.display = 'none';
-        childSec.style.display = 'none';
-      } else {
-        const remaining = currentChildItems.filter(i => !i.matched).length;
-        const total = currentChildItems.length;
-
-        banner.textContent = `子品番をスキャンしてください (残り: ${remaining}/${total}点)`;
-        banner.style.background = '#fff3e0';
-        parentSec.style.display = 'flex';
-        childSec.style.display = 'block';
-        document.getElementById('displayParentCode').textContent = currentParent;
-        remainingCount.textContent = `残り ${remaining} / ${total}`;
-
-        childList.innerHTML = '';
-        currentChildItems.forEach(item => {
-          const li = document.createElement('li');
-          li.className = `child-item ${item.matched ? 'matched' : ''}`;
-          li.innerHTML = `
-            <span>${item.code}</span>
-            <span class="status-tag" style="font-size:0.85rem; color:${item.matched ? '#2e7d32' : '#d32f2f'};">
-              ${item.matched ? '✔ 照合済' : '未読込'}
-            </span>
-          `;
-          childList.appendChild(li);
-        });
-      }
-      keepFocus();
-    }
-
-    function showNG(msg) {
-      const prevMode = currentCameraMode;
-      stopAllCameras();
-      document.getElementById('ngMessage').textContent = msg;
-      const ngOverlay = document.getElementById('ngOverlay');
-      ngOverlay.style.display = 'flex';
-      ngOverlay.dataset.prevMode = prevMode || '';
-    }
-
-    function dismissNG() {
-      const ngOverlay = document.getElementById('ngOverlay');
-      const prevMode = ngOverlay.dataset.prevMode;
-      ngOverlay.style.display = 'none';
-
-      if (prevMode === 'QR') {
-        startLiveBarcodeScan();
-      } else if (prevMode === 'OCR') {
-        startLiveOCRScan();
-      }
-      keepFocus();
-    }
-
-    function showComplete() {
-      stopAllCameras();
-      document.getElementById('completeOverlay').style.display = 'flex';
-    }
-
-    function dismissComplete() {
-      document.getElementById('completeOverlay').style.display = 'none';
-      resetProcess();
-    }
-
-    function resetProcess() {
-      stopAllCameras();
-      currentStep = 'PARENT';
-      currentParent = '';
-      currentChildItems = [];
-      lastScannedCode = '';
-      updateUI();
-    }
-
-    async function stopAllCameras() {
-      currentCameraMode = null;
-      if (ocrTimer) {
-        clearInterval(ocrTimer);
-        ocrTimer = null;
-      }
-
-      if (ocrStream) {
-        ocrStream.getTracks().forEach(track => {
-          track.stop();
-          track.enabled = false;
-        });
-        ocrStream = null;
-      }
-
-      const ocrVideo = document.getElementById('ocrVideo');
-      if (ocrVideo) {
-        ocrVideo.srcObject = null;
-        ocrVideo.pause();
-      }
-
-      if (html5QrCode) {
-        try {
-          if (html5QrCode.isScanning) {
-            await html5QrCode.stop();
-          }
-          await html5QrCode.clear();
-        } catch (e) {}
-        html5QrCode = null;
-      }
-
-      document.getElementById('qrVideoReader').style.display = 'none';
-      document.getElementById('ocrVideo').style.display = 'none';
-      document.getElementById('ocrScanBox').style.display = 'none';
-      document.getElementById('cropPreviewContainer').style.display = 'none';
-      document.getElementById('cameraBox').style.display = 'none';
-      document.getElementById('ocrLivePreview').textContent = '';
-      isOcrProcessing = false;
-      isCoolDown = false;
-      keepFocus();
-    }
-
-    // --- QRコード桁数制限処理 ---
-    function formatQrCode(rawCode) {
-      const limit = parseInt(localStorage.getItem('pokayoke_qr_limit') || '0', 10);
-      if (limit > 0 && rawCode.length > limit) {
-        return rawCode.substring(0, limit);
-      }
-      return rawCode;
-    }
-
-    function saveQrLimitSetting() {
-      const val = document.getElementById('qrLengthLimit').value.trim();
-      if (val === '' || parseInt(val, 10) <= 0) {
-        localStorage.removeItem('pokayoke_qr_limit');
-        alert('QRコードの桁数制限を解除しました（全桁読取）');
-      } else {
-        localStorage.setItem('pokayoke_qr_limit', val);
-        alert(`QRコード読取桁数を「先頭 ${val} 桁」に設定しました`);
-      }
-    }
-
-    // --- バーコード/QR ---
-    async function startLiveBarcodeScan() {
-      await stopAllCameras();
-      scanInput.blur();
-      currentCameraMode = 'QR';
-
-      const cameraBox = document.getElementById('cameraBox');
-      const qrReader = document.getElementById('qrVideoReader');
-      
-      cameraBox.style.display = 'block';
-      qrReader.style.display = 'block';
-
-      html5QrCode = new Html5Qrcode("qrVideoReader");
-
-      const qrBoxFunction = function(viewfinderWidth, viewfinderHeight) {
-        const minEdge = Math.min(viewfinderWidth, viewfinderHeight);
-        return {
-          width: Math.floor(minEdge * 0.7),
-          height: Math.floor(minEdge * 0.5)
-        };
-      };
-
-      html5QrCode.start(
-        { facingMode: "environment" },
-        { 
-          fps: 20, 
-          qrbox: qrBoxFunction,
-          aspectRatio: 1.333333
-        },
-        (decodedText) => {
-          const formatted = formatQrCode(decodedText);
-          processScan(formatted);
-        },
-        () => {}
-      ).catch((err) => {
-        alert('カメラの起動に失敗しました。カメラ権限を確認してください。');
-        stopAllCameras();
-      });
-    }
-
-    // --- 大津の自動二値化 ---
-    function getOtsuThreshold(grayData) {
-      const hist = new Array(256).fill(0);
-      const total = grayData.length;
-      for (let i = 0; i < total; i++) hist[grayData[i]]++;
-
-      let sum = 0;
-      for (let t = 0; t < 256; t++) sum += t * hist[t];
-
-      let sumB = 0;
-      let wB = 0;
-      let wF = 0;
-      let varMax = 0;
-      let threshold = 128;
-
-      for (let t = 0; t < 256; t++) {
-        wB += hist[t];
-        if (wB === 0) continue;
-        wF = total - wB;
-        if (wF === 0) break;
-
-        sumB += t * hist[t];
-        const mB = sumB / wB;
-        const mF = (sum - sumB) / wF;
-        const varBetween = wB * wF * (mB - mF) * (mB - mF);
-
-        if (varBetween > varMax) {
-          varMax = varBetween;
-          threshold = t;
-        }
-      }
-      return threshold;
-    }
-
-    // --- OCR ---
-    async function initOcrWorker() {
-      if (!ocrWorker) {
-        document.getElementById('statusBanner').textContent = 'OCRエンジンを準備中...';
-        ocrWorker = await Tesseract.createWorker('eng');
-        await ocrWorker.setParameters({
-          tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_',
-          tessedit_pageseg_mode: '7'
-        });
-      }
-    }
-
-    async function startLiveOCRScan() {
-      await stopAllCameras();
-      scanInput.blur();
-      currentCameraMode = 'OCR';
-
-      const cameraBox = document.getElementById('cameraBox');
-      const ocrVideo = document.getElementById('ocrVideo');
-      const ocrScanBox = document.getElementById('ocrScanBox');
-      const cropPreview = document.getElementById('cropPreviewContainer');
-
-      cameraBox.style.display = 'block';
-      ocrVideo.style.display = 'block';
-      ocrScanBox.style.display = 'flex';
-      cropPreview.style.display = 'flex';
-
-      try {
-        ocrStream = await navigator.mediaDevices.getUserMedia({
-          video: { 
-            facingMode: 'environment', 
-            width: { ideal: 1280 }, 
-            height: { ideal: 960 }
-          },
-          audio: false
-        });
-        ocrVideo.srcObject = ocrStream;
-        await ocrVideo.play();
-
-        await initOcrWorker();
-        document.getElementById('statusBanner').textContent = '緑枠内に文字を合わせてください (連続読取中)';
-
-        ocrTimer = setInterval(captureAndRecognizeFrame, 400);
-      } catch (err) {
-        alert('OCRカメラの起動に失敗しました。カメラ権限を確認してください。');
-        stopAllCameras();
-      }
-    }
-
-    // ★ 狭めた枠（高さ約11%）に合わせて中心からジャストクロップ ★
-    async function captureAndRecognizeFrame() {
-      if (isOcrProcessing || !ocrStream || isCoolDown) return;
-
-      const video = document.getElementById('ocrVideo');
-      const canvas = document.getElementById('ocrCanvas');
-      if (!video || video.videoWidth === 0) return;
-
-      isOcrProcessing = true;
-
-      // 枠幅75%、枠高さ約11%（34px相当）に切り抜き比率を同期
-      const cropWidth = Math.floor(video.videoWidth * 0.75);
-      const cropHeight = Math.floor(video.videoHeight * 0.11);
-      const startX = Math.floor((video.videoWidth - cropWidth) / 2);
-      const startY = Math.floor((video.videoHeight - cropHeight) / 2);
-
-      canvas.width = cropWidth;
-      canvas.height = cropHeight;
-      const ctx = canvas.getContext('2d', { willReadFrequently: true });
-
-      ctx.drawImage(video, startX, startY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
-
-      const imgData = ctx.getImageData(0, 0, cropWidth, cropHeight);
-      const d = imgData.data;
-      const grayArr = new Uint8Array(d.length / 4);
-
-      for (let i = 0, j = 0; i < d.length; i += 4, j++) {
-        grayArr[j] = Math.round(0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2]);
-      }
-
-      const threshold = getOtsuThreshold(grayArr);
-
-      for (let i = 0, j = 0; i < d.length; i += 4, j++) {
-        const val = grayArr[j] > threshold ? 255 : 0;
-        d[i] = val;
-        d[i+1] = val;
-        d[i+2] = val;
-      }
-      ctx.putImageData(imgData, 0, 0);
-
-      try {
-        const { data: { text } } = await ocrWorker.recognize(canvas);
-        const cleaned = text.replace(/[^A-Za-z0-9_-]/g, '').trim();
-
-        if (cleaned) {
-          document.getElementById('ocrLivePreview').textContent = `[ ${cleaned} ]`;
-          document.getElementById('ocrStatusText').textContent = cleaned;
-        }
-
-        if (cleaned && cleaned.length >= 2) {
-          if (currentStep === 'PARENT' && masterData[cleaned]) {
-            processScan(cleaned);
-          } else if (currentStep === 'CHILD' && currentChildItems.some(item => item.code === cleaned && !item.matched)) {
-            processScan(cleaned);
-          }
-        }
-      } catch (e) {
-        console.error('OCR Error:', e);
-      } finally {
-        isOcrProcessing = false;
-      }
-    }
-
-    // --- CSV読み込み ---
-    document.getElementById('csvFileInput').addEventListener('change', function(e) {
-      const file = e.target.files[0];
-      if (!file) return;
-
-      const reader = new FileReader();
-      reader.onload = function(evt) {
-        const buffer = evt.target.result;
-        let text = '';
-        try {
-          text = new TextDecoder('utf-8', { fatal: true }).decode(buffer);
-        } catch (e) {
-          text = new TextDecoder('shift-jis').decode(buffer);
-        }
-        parseCSV(text);
-      };
-      reader.readAsArrayBuffer(file);
-    });
-
-    function parseCSV(text) {
-      const lines = text.split(/\r\n|\n|\r/);
-      masterData = {};
-      let count = 0;
-
-      lines.forEach(line => {
-        if (!line.trim()) return;
-        const cols = line.split(',').map(s => s.trim().replace(/^"|"$/g, ''));
-        const parent = cols[0];
-        const children = cols.slice(1).filter(s => s !== '');
-
-        if (parent && children.length > 0) {
-          masterData[parent] = children;
-          count++;
-        }
-      });
-
-      document.getElementById('masterCount').textContent = count;
-      localStorage.setItem('pokayoke_master', JSON.stringify(masterData));
-      alert(`マスタを読み込みました（${count}件の親品番登録）`);
-      closeModal('settingModal');
-    }
-
-    // Googleドライブ同期
-    async function syncGDrive() {
-      const url = document.getElementById('gdriveUrl').value.trim();
-      if (!url) return alert('URLを入力してください');
-
-      try {
-        const res = await fetch(url);
-        const buffer = await res.arrayBuffer();
-        let text = '';
-        try {
-          text = new TextDecoder('utf-8', { fatal: true }).decode(buffer);
-        } catch(e) {
-          text = new TextDecoder('shift-jis').decode(buffer);
-        }
-        parseCSV(text);
-        localStorage.setItem('pokayoke_gdrive_url', url);
-      } catch (e) {
-        alert('取得に失敗しました。公開設定やCORS制限を確認してください。');
-      }
-    }
-
-    // --- 照合ログ管理 ---
-    function addLog(parent, child, result) {
-      const logs = JSON.parse(localStorage.getItem('pokayoke_logs') || '[]');
-      const now = new Date().toLocaleString();
-      logs.unshift({ date: now, parent, child, result });
-      localStorage.setItem('pokayoke_logs', JSON.stringify(logs.slice(0, 500)));
-      renderLogs();
-    }
-
-    function renderLogs() {
-      const logs = JSON.parse(localStorage.getItem('pokayoke_logs') || '[]');
-      const container = document.getElementById('logContainer');
-      container.innerHTML = logs.map(l => `<div>[${l.date}] 親:${l.parent} 子:${l.child} ➔ <b>${l.result}</b></div>`).join('');
-    }
-
-    function exportLogsCSV() {
-      const logs = JSON.parse(localStorage.getItem('pokayoke_logs') || '[]');
-      let csv = '日時,親品番,子品番,判定結果\r\n';
-      logs.forEach(l => {
-        csv += `"${l.date}","${l.parent}","${l.child}","${l.result}"\r\n`;
-      });
-      const blob = new Blob([new Uint8Array([0xEF, 0xBB, 0xBF]), csv], { type: 'text/csv;charset=utf-8;' });
-      const link = document.createElement('a');
-      link.href = URL.createObjectURL(blob);
-      link.download = `pokayoke_log_${Date.now()}.csv`;
-      link.click();
-    }
-
-    function clearLogs() {
-      if (confirm('履歴を消去しますか？')) {
-        localStorage.removeItem('pokayoke_logs');
-        renderLogs();
-      }
-    }
-
-    function openModal(id) {
-      document.getElementById(id).style.display = 'flex';
-      if (id === 'logModal') renderLogs();
-    }
-    function closeModal(id) {
-      document.getElementById(id).style.display = 'none';
-      keepFocus();
-    }
-
-    window.onload = function() {
-      const savedMaster = localStorage.getItem('pokayoke_master');
-      if (savedMaster) {
-        masterData = JSON.parse(savedMaster);
-        document.getElementById('masterCount').textContent = Object.keys(masterData).length;
-      }
-      const savedUrl = localStorage.getItem('pokayoke_gdrive_url');
-      if (savedUrl) document.getElementById('gdriveUrl').value = savedUrl;
-
-      const savedQrLimit = localStorage.getItem('pokayoke_qr_limit');
-      if (savedQrLimit) {
-        document.getElementById('qrLengthLimit').value = savedQrLimit;
-      }
-
-      updateUI();
-    };
-  </script>
+  <!-- 全工程合格完了オーバーレイ -->
+  <div class="fullscreen-overlay ok" id="completeOverlay">
+    <h1 style="font-size:3rem; margin-bottom:12px;">🎉 全工程 合格！</h1>
+    <p id="completeOverlayText" style="font-size:1.25rem;">すべてのステップ検査が完了しました。品番読取画面へ戻ります...</p>
+  </div>
+
+  <!-- 分割JavaScriptモジュールの読み込み -->
+  <script src="config_audio.js"></script>
+  <script src="csv_master.js"></script>
+  <script src="scan_ocr.js"></script>
+  <script src="ai_inspect.js"></script>
+  <script src="app_admin.js"></script>
 </body>
 </html>
