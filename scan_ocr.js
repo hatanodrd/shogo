@@ -24,10 +24,10 @@ function startInspectionFromDropdown() {
   tryStartInspectionWithPart(val);
 }
 
-function tryStartInspectionWithPart(partNo) {
+async function tryStartInspectionWithPart(partNo) {
   blurActiveInput();
   const cleaned = normalizeCodeString(partNo);
-  const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+  const stored = (await idbGet(STORAGE_KEY)) || {};
   if (!stored[cleaned] || !stored[cleaned].stepsData || stored[cleaned].stepsData.length === 0) {
     playBuzzerPattern('NG');
     speakText('この品番は未登録です。設定画面で登録してください');
@@ -41,9 +41,8 @@ function tryStartInspectionWithPart(partNo) {
   window.currentStepIdx = 0;
   window.isChatteringCooldown = false;
   playBuzzerPattern('OK');
-  navigateTo('inspectPage').then(() => {
-    updateInspectStepUI(true);
-  });
+  await navigateTo('inspectPage');
+  updateInspectStepUI(true);
 }
 
 async function startPartQrScanner() {
@@ -125,7 +124,6 @@ function updateOcrRoiStyle() {
   guide.style.height = hPct + '%';
 }
 
-// 画面上の緑枠とビデオ解像度の1px完全同期切り抜き＋積分画像による局所適応二値化（影除去）
 async function processOcrFrame(forceAccept) {
   if (isOcrBusy || !window.partOcrStream) return;
   const vid = document.getElementById('partOcrVideo');
@@ -204,10 +202,10 @@ async function processOcrFrame(forceAccept) {
         const cleaned = normalizeCodeString(text).replace(/[^A-Za-z0-9_-]/g, '');
         if (cleaned.length >= 2) {
           document.getElementById('ocrRoiBadge').textContent = `読取中: ${cleaned}`;
-          const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+          const stored = (await idbGet(STORAGE_KEY)) || {};
           if (stored[cleaned] || forceAccept) {
             await stopPartScanCameras();
-            tryStartInspectionWithPart(cleaned);
+            await tryStartInspectionWithPart(cleaned);
           }
         }
       }
