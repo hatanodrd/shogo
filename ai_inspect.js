@@ -1,5 +1,5 @@
 // =========================================================
-// ai_inspect.js : MobileNet v2 パン屋AI照合・1Dバーコード強化・ステップ検査
+// ai_inspect.js : パン屋AI照合・バーコード専用枠限定＆1D専用エンジン統合版
 // =========================================================
 window.currentInspectPart = '';
 window.currentSteps = [];
@@ -8,11 +8,16 @@ let isInspectingStep = false;
 window.isChatteringCooldown = false;
 let cooldownInterval = null;
 let fallbackHtml5Scanner = null;
+let autoBarcodeTimer = null;
+let isAutoBarcodeBusy = false;
 
 async function initAI() {
   const badge = document.getElementById('aiLiveBadge');
-  badge.textContent = 'AIモデル(MobileNet v2)読込中...';
+  badge.textContent = 'AI・バーコードエンジン読込中...';
   badge.style.color = '#ffeb3b';
+
+  // 1次元バーコード専用エンジン(Quagga2)を動的ロード
+  loadQuaggaScript();
 
   let retry = 0;
   while ((typeof tf === 'undefined' || typeof mobilenet === 'undefined') && retry < 20) {
@@ -27,7 +32,7 @@ async function initAI() {
   try {
     await tf.ready();
     mobilenetModel = await mobilenet.load({ version: 2, alpha: 1.0 });
-    badge.textContent = '🥐 パン屋AI (MobileNet v2) 準備完了';
+    badge.textContent = '🥐 パン屋AI ＆ 🎯高精度バーコード 準備完了';
     badge.style.color = '#00e676';
   } catch (e) {
     badge.textContent = '🥐 パン屋AI (高速特徴モード) 準備完了';
@@ -35,8 +40,27 @@ async function initAI() {
   }
 }
 
+function loadQuaggaScript() {
+  if (typeof Quagga !== 'undefined') return;
+  const s = document.createElement('script');
+  s.src = 'https://cdn.jsdelivr.net/npm/@ericblade/quagga2@1.8.4/dist/quagga.min.js';
+  s.async = true;
+  document.head.appendChild(s);
+}
+
+// ★ QR・バーコード検査時は、全体枠(isFullFrame)であっても中央の横長枠に自動限定する ★
 function getScaledStepCoords(step, targetW, targetH) {
   if (!step || step.isFullFrame) {
+    if (step && step.type === 'BARCODE') {
+      const w = Math.round(targetW * 0.76);
+      const h = Math.round(targetH * 0.26);
+      return {
+        x: Math.round((targetW - w) / 2),
+        y: Math.round((targetH - h) / 2),
+        w: w,
+        h: h
+      };
+    }
     return { x: 0, y: 0, w: targetW, h: targetH };
   }
   const bw = step.baseW || 640;
@@ -48,6 +72,53 @@ function getScaledStepCoords(step, targetW, targetH) {
     h: Math.round((step.h || bh) * (targetH / bh))
   };
 }
+
+// 画面描画フック：バーコード検査時は枠外を暗くマスクし、中央に赤い水平レーザー線を表示
+window.addEventListener('DOMContentLoaded', () => {
+  if (typeof window.drawSmartRoiOverlay === 'function') {
+    window.drawSmartRoiOverlay = function(ctx, canvasW, canvasH, step, labelPrefix) {
+      const coords = getScaledStepCoords(step, canvasW, canvasH);
+      const isBarcode = step.type === 'BARCODE';
+      const color = isBarcode ? '#00e676' : '#ab47bc';
+
+      // バーコード時は枠外を半透明で暗くして枠内へ視線・ピントを誘導
+      if (isBarcode) {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.48)';
+        ctx.fillRect(0, 0, canvasW, coords.y);
+        ctx.fillRect(0, coords.y + coords.h, canvasW, canvasH - (coords.y + coords.h));
+        ctx.fillRect(0, coords.y, coords.x, coords.h);
+        ctx.fillRect(coords.x + coords.w, coords.y, canvasW - (coords.x + coords.w), coords.h);
+
+        // 中央の水平赤レーザーガイド線
+        const midY = coords.y + Math.round(coords.h / 2);
+        ctx.strokeStyle = 'rgba(255, 23, 68, 0.85)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(coords.x + 10, midY);
+        ctx.lineTo(coords.x + coords.w - 10, midY);
+        ctx.stroke();
+      }
+
+      // 枠線の描画
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 4;
+      ctx.strokeRect(coords.x, coords.y, coords.w, coords.h);
+
+      const labelText = `${labelPrefix}${step.name} (${isBarcode ? '📷枠内にコードを収めてください' : '🥐パン屋AI'})`;
+      ctx.font = 'bold 15px sans-serif';
+      const textWidth = ctx.measureText(labelText).width;
+      const boxW = Math.min(canvasW - 8, textWidth + 18);
+      const boxH = 26;
+      const boxX = Math.max(4, Math.min(coords.x, canvasW - boxW - 4));
+      const boxY = (coords.y - boxH < 4) ? (coords.y + 4) : (coords.y - boxH);
+
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.82)';
+      ctx.fillRect(boxX, boxY, boxW, boxH);
+      ctx.fillStyle = color;
+      ctx.fillText(labelText, boxX + 8, boxY + 18);
+    };
+  }
+});
 
 async function extractBakeryFeatureVector(sourceCanvas, step) {
   const coords = getScaledStepCoords(step, sourceCanvas.width, sourceCanvas.height);
@@ -95,66 +166,107 @@ function computeCosineSimilarity(a, b) {
 }
 
 // =========================================================
-// 🎯 1次元バーコード＆QR 高精度検出エンジン
-// （マルチフレーム連続リトライ ＋ 上下スライス ＋ コントラスト強調）
+// 🎯 枠限定クロップ ＆ トリプルエンジン（BarcodeDetector + Quagga2 + ZXing）
 // =========================================================
 function getFallbackScanner() {
+  const el = document.getElementById('hiddenReaderFallback');
+  if (el && el.style.display === 'none') {
+    // iOSでdisplay:noneだと内部Canvasが0pxになり1Dバーコードが潰れる問題を回避
+    el.style.display = 'block';
+    el.style.position = 'fixed';
+    el.style.left = '-9999px';
+    el.style.top = '-9999px';
+    el.style.width = '640px';
+    el.style.height = '480px';
+    el.style.opacity = '0';
+    el.style.pointerEvents = 'none';
+  }
   if (!fallbackHtml5Scanner) {
     fallbackHtml5Scanner = new Html5Qrcode('hiddenReaderFallback');
   }
   return fallbackHtml5Scanner;
 }
 
-// キャンバス領域に白余白を付け、必要に応じてコントラストを強調した画像を生成
-function buildBarcodeCandidateCanvas(srcSource, sx, sy, sw, sh, enhanceContrast = false) {
-  const pad = 24; // 1次元バーコード認識に必須の左右白余白（クワイエットゾーン）
-  const targetW = Math.min(960, Math.max(320, sw));
-  const scale = targetW / Math.max(1, sw);
-  const targetH = Math.max(80, Math.round(sh * scale));
+// 枠内領域を拡大・白余白付与して切り抜く
+function buildCroppedBarcodeCanvas(sourceCanvas, coords, mode = 'RAW') {
+  const pad = 28;
+  // 小さいバーコードも線が潰れないよう横幅800px以上に拡大
+  const scale = coords.w < 640 ? (800 / Math.max(1, coords.w)) : 1.0;
+  const targetW = Math.round(coords.w * scale);
+  const targetH = Math.round(coords.h * scale);
 
   reusableCropCanvas.width = targetW + pad * 2;
   reusableCropCanvas.height = targetH + pad * 2;
 
   reusableCropCtx.fillStyle = '#ffffff';
   reusableCropCtx.fillRect(0, 0, reusableCropCanvas.width, reusableCropCanvas.height);
-  reusableCropCtx.drawImage(srcSource, sx, sy, sw, sh, pad, pad, targetW, targetH);
+  reusableCropCtx.drawImage(
+    sourceCanvas,
+    coords.x, coords.y, coords.w, coords.h,
+    pad, pad, targetW, targetH
+  );
 
-  if (enhanceContrast) {
+  if (mode === 'SHARP_CONTRAST') {
     const imgData = reusableCropCtx.getImageData(0, 0, reusableCropCanvas.width, reusableCropCanvas.height);
     const d = imgData.data;
-    // 輝度計算と強めのコントラストストレッチ
     let minG = 255, maxG = 0;
     for (let i = 0; i < d.length; i += 16) {
-      const g = Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]);
+      const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
       if (g < minG) minG = g;
       if (g > maxG) maxG = g;
     }
-    const range = Math.max(40, maxG - minG);
+    const mid = (minG + maxG) * 0.5;
+    const range = Math.max(30, maxG - minG);
     for (let i = 0; i < d.length; i += 4) {
       const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-      let norm = ((g - minG) / range) * 255;
-      // S字カーブ強調で白と黒の境界をくっきりさせる
-      norm = norm < 128 ? Math.max(0, norm * 0.75) : Math.min(255, 128 + (norm - 128) * 1.25);
-      d[i] = d[i + 1] = d[i + 2] = norm;
+      // 1次元バーコードの白黒エッジを際立たせる強コントラスト化
+      let v = ((g - mid) / range) * 360 + 128;
+      v = Math.max(0, Math.min(255, v));
+      d[i] = d[i + 1] = d[i + 2] = v;
     }
     reusableCropCtx.putImageData(imgData, 0, 0);
   }
   return reusableCropCanvas;
 }
 
-async function tryDecodeSingleCanvas(canvasEl) {
-  // 1. ネイティブ BarcodeDetector (対応環境)
-  if (sharedBarcodeDetector) {
+// Quagga2 による1次元バーコード専用デコード
+function decodeWithQuagga(canvasEl) {
+  return new Promise((resolve) => {
+    if (typeof Quagga === 'undefined') return resolve(null);
     try {
-      const results = await sharedBarcodeDetector.detect(canvasEl);
-      if (results && results.length > 0) {
-        const fmt = (results[0].format || '').toLowerCase();
-        return { value: results[0].rawValue, isQr: fmt === 'qr_code' };
-      }
-    } catch (e) {}
-  }
+      const dataUrl = canvasEl.toDataURL('image/png');
+      Quagga.decodeSingle({
+        src: dataUrl,
+        numOfWorkers: 0,
+        locate: true,
+        inputStream: { size: canvasEl.width },
+        decoder: {
+          readers: [
+            'code_128_reader',
+            'ean_reader',
+            'ean_8_reader',
+            'code_39_reader',
+            'codabar_reader',
+            'i2of5_reader',
+            'upc_reader',
+            'upc_e_reader'
+          ]
+        }
+      }, (result) => {
+        if (result && result.codeResult && result.codeResult.code) {
+          resolve({ value: result.codeResult.code, isQr: false });
+        } else {
+          resolve(null);
+        }
+      });
+    } catch (e) {
+      resolve(null);
+    }
+  });
+}
 
-  // 2. iOS / 非対応ブラウザ用 Html5Qrcode (ZXing) 静止画デコード
+// Html5Qrcode (ZXing) によるQR＆バーコードデコード
+function decodeWithHtml5Qrcode(canvasEl) {
   return new Promise((resolve) => {
     canvasEl.toBlob(async (blob) => {
       if (!blob) return resolve(null);
@@ -176,49 +288,93 @@ async function tryDecodeSingleCanvas(canvasEl) {
   });
 }
 
-// 1回の検査ボタン押下で最大7フレーム（約1.5秒）連続スキャン＆マルチスライス解析
+async function tryDecodeSingleCanvas(canvasEl) {
+  // 1. OS標準 BarcodeDetector
+  if (sharedBarcodeDetector) {
+    try {
+      const results = await sharedBarcodeDetector.detect(canvasEl);
+      if (results && results.length > 0) {
+        const fmt = (results[0].format || '').toLowerCase();
+        return { value: results[0].rawValue, isQr: fmt === 'qr_code' };
+      }
+    } catch (e) {}
+  }
+
+  // 2. 1次元バーコードに強い Quagga2 と QRに強い Html5Qrcode を順次実行
+  const quaggaRes = await decodeWithQuagga(canvasEl);
+  if (quaggaRes && quaggaRes.value) return quaggaRes;
+
+  const zxingRes = await decodeWithHtml5Qrcode(canvasEl);
+  if (zxingRes && zxingRes.value) return zxingRes;
+
+  return null;
+}
+
+// 1フレーム分の枠内デコード試行（通常画像 ＋ エッジ強調画像の2パス）
+async function detectBarcodeSingleFrame(sourceCanvas, step) {
+  const coords = getScaledStepCoords(step, sourceCanvas.width, sourceCanvas.height);
+  if (coords.w < 20 || coords.h < 20) return null;
+
+  // パス1: 枠内そのまま（白余白付き）
+  const rawCanvas = buildCroppedBarcodeCanvas(sourceCanvas, coords, 'RAW');
+  let res = await tryDecodeSingleCanvas(rawCanvas);
+  if (res && res.value) return res;
+
+  // パス2: コントラスト強調
+  const sharpCanvas = buildCroppedBarcodeCanvas(sourceCanvas, coords, 'SHARP_CONTRAST');
+  res = await tryDecodeSingleCanvas(sharpCanvas);
+  if (res && res.value) return res;
+
+  return null;
+}
+
+// ボタン押下時：最大6回（約1.5秒）連続スキャン
 async function detectBarcodeFromCanvas(sourceCanvas, step) {
-  const maxAttempts = 7;
   const videoEl = document.getElementById('videoSource');
-
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    // 2回目以降は最新カメラフレームが更新されるのを少し待つ
+  for (let attempt = 0; attempt < 6; attempt++) {
     if (attempt > 0) {
-      await new Promise(r => setTimeout(r, 180));
+      await new Promise(r => setTimeout(r, 200));
       if (videoEl && isCamRunning && videoEl.readyState >= 2) {
-        const ctx = sourceCanvas.getContext('2d');
-        ctx.drawImage(videoEl, 0, 0, sourceCanvas.width, sourceCanvas.height);
+        sourceCanvas.getContext('2d').drawImage(videoEl, 0, 0, sourceCanvas.width, sourceCanvas.height);
       }
     }
-
-    const coords = getScaledStepCoords(step, sourceCanvas.width, sourceCanvas.height);
-    const rx = coords.x, ry = coords.y;
-    const rw = Math.max(32, coords.w), rh = Math.max(32, coords.h);
-
-    // 候補パターン：
-    // ① 枠全体（通常＋白余白）
-    // ② 枠全体（コントラスト強調＋白余白）
-    // ③ 枠の中央帯（1Dバーコード水平走査集中）
-    // ④ 枠の上部帯・下部帯（バーコードが上下にズレている場合の救済）
-    const slices = [
-      { y: ry, h: rh, enhance: false },
-      { y: ry, h: rh, enhance: true },
-      { y: ry + Math.round(rh * 0.25), h: Math.round(rh * 0.5), enhance: true },
-      { y: ry + Math.round(rh * 0.1),  h: Math.round(rh * 0.45), enhance: true },
-      { y: ry + Math.round(rh * 0.45), h: Math.round(rh * 0.45), enhance: true }
-    ];
-
-    for (let i = 0; i < slices.length; i++) {
-      const sl = slices[i];
-      if (sl.h < 24) continue;
-      const candCanvas = buildBarcodeCandidateCanvas(sourceCanvas, rx, sl.y, rw, sl.h, sl.enhance);
-      const res = await tryDecodeSingleCanvas(candCanvas);
-      if (res && res.value) {
-        return res;
-      }
-    }
+    const res = await detectBarcodeSingleFrame(sourceCanvas, step);
+    if (res && res.value) return res;
   }
   return null;
+}
+
+// =========================================================
+// 🔄 バーコードステップ中の常時オートスキャン（かざすだけで自動読取）
+// =========================================================
+function startAutoBarcodeLoop() {
+  stopAutoBarcodeLoop();
+  autoBarcodeTimer = setInterval(async () => {
+    if (activePage !== 'inspectPage' || !isCamRunning) return;
+    if (isInspectingStep || window.isChatteringCooldown || isAutoBarcodeBusy) return;
+    if (document.getElementById('ngOverlay').style.display === 'flex') return;
+
+    const step = window.currentSteps[window.currentStepIdx];
+    if (!step || step.type !== 'BARCODE') return;
+
+    isAutoBarcodeBusy = true;
+    try {
+      const mainCanvas = document.getElementById('mainCanvas');
+      const codeObj = await detectBarcodeSingleFrame(mainCanvas, step);
+      if (codeObj && codeObj.value && !window.isChatteringCooldown && !isInspectingStep) {
+        verifyStepBarcodeValue(codeObj.value, codeObj.isQr, step);
+      }
+    } catch (e) {}
+    isAutoBarcodeBusy = false;
+  }, 450);
+}
+
+function stopAutoBarcodeLoop() {
+  if (autoBarcodeTimer) {
+    clearInterval(autoBarcodeTimer);
+    autoBarcodeTimer = null;
+  }
+  isAutoBarcodeBusy = false;
 }
 
 function updateInspectStepUI(announceVoice = false) {
@@ -241,11 +397,13 @@ function updateInspectStepUI(announceVoice = false) {
   const btnExec = document.getElementById('btnExecuteStep');
 
   if (step.type === 'BARCODE') {
-    banner.textContent = `👉 Step ${window.currentStepIdx + 1} / ${window.currentSteps.length} ：【 ${step.name} 】のコードを読み取ってください`;
+    banner.textContent = `👉 Step ${window.currentStepIdx + 1} / ${window.currentSteps.length} ：緑枠の赤線に【 ${step.name} 】のコードを合わせてください（自動読取）`;
     bcBox.style.display = 'block';
     btnExec.textContent = `🔍 カメラで【 ${step.name} 】のコードを読取・照合 (Space)`;
-    if (announceVoice) speakText(`${step.name}のコードを読み取ってください`);
+    if (announceVoice) speakText(`${step.name}のコードを枠内に合わせてください`);
+    startAutoBarcodeLoop();
   } else {
+    stopAutoBarcodeLoop();
     banner.textContent = `👉 Step ${window.currentStepIdx + 1} / ${window.currentSteps.length} ：【 ${step.name} 】を置いて検査ボタンを押してください`;
     bcBox.style.display = 'none';
     btnExec.textContent = `🥐 【 ${step.name} 】パン屋AI検査を実行 (Space)`;
@@ -274,17 +432,16 @@ async function executeCurrentStepInspection() {
 
   const mainCanvas = document.getElementById('mainCanvas');
   const btnExec = document.getElementById('btnExecuteStep');
-  const origBtnText = btnExec.textContent;
   isInspectingStep = true;
 
   try {
     if (step.type === 'BARCODE') {
-      btnExec.textContent = '⏳ バーコード読取中... (そのままかざしてください)';
+      btnExec.textContent = '⏳ 枠内のバーコードを読取中...';
       btnExec.disabled = true;
 
       const codeObj = await detectBarcodeFromCanvas(mainCanvas, step);
       if (!codeObj) {
-        alert('枠内からバーコード/QRを検出できませんでした。\nバーコードを水平に向け、光の反射を避けてもう一度お試しください。');
+        alert('緑枠内からバーコード/QRを検出できませんでした。\n中央の赤線にバーコードを水平に合わせ、15〜20cm離してかざしてください。');
         return;
       }
       verifyStepBarcodeValue(codeObj.value, codeObj.isQr, step);
@@ -324,6 +481,9 @@ function verifyStepBarcodeValue(rawScanned, isQr, step) {
     if (subTry === expected) actual = subTry;
   }
 
+  // 自動スキャン中に背景の無関係な短いノイズ数字を拾った場合の誤発火防止
+  if (!actual || actual.length < 2) return;
+
   if (actual === expected) {
     onCurrentStepPassed(`${step.name}コード一致 (${actual})`);
   } else {
@@ -340,6 +500,7 @@ function onCurrentStepPassed(detailLog) {
     updateInspectStepUI(true);
     startChatteringCooldown(2.0);
   } else {
+    stopAutoBarcodeLoop();
     countOK++;
     updateCounterUI();
     recordInspectionLog(window.currentInspectPart, 'OK', `全${window.currentSteps.length}ステップ合格 (${detailLog})`);
