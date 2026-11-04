@@ -1,5 +1,5 @@
 // =========================================================
-// csv_master.js : Aの表・Bの表 CSV解析・自動突合・リセット処理
+// csv_master.js : Aの表・Bの表 CSV解析・IndexedDB保存・突合処理
 // =========================================================
 function parseCsvLine(line) {
   const res = [];
@@ -24,7 +24,7 @@ function handleCsvFileSelect(event, tableType) {
   const file = event.target.files[0];
   if (!file) return;
   const reader = new FileReader();
-  reader.onload = (e) => {
+  reader.onload = async (e) => {
     const buf = e.target.result;
     let text = '';
     try {
@@ -33,17 +33,16 @@ function handleCsvFileSelect(event, tableType) {
       text = new TextDecoder('shift-jis').decode(buf);
     }
     if (tableType === 'A') {
-      parseTableACsvText(text);
+      await parseTableACsvText(text);
     } else {
-      parseTableBCsvText(text);
+      await parseTableBCsvText(text);
     }
-    processMasterCsvTables();
+    await processMasterCsvTables();
   };
   reader.readAsArrayBuffer(file);
 }
 
-// Aの表：1行目見出しスキップ、A列(0)=品番、F列(5)=バーコード値
-function parseTableACsvText(text) {
+async function parseTableACsvText(text) {
   const lines = text.split(/\r\n|\n|\r/);
   const mapA = {};
   for (let i = 1; i < lines.length; i++) {
@@ -57,11 +56,10 @@ function parseTableACsvText(text) {
     mapA[partNo].push(codeVal);
   }
   csvTableA = mapA;
-  localStorage.setItem(TABLE_A_KEY, JSON.stringify(csvTableA));
+  await idbSet(TABLE_A_KEY, csvTableA);
 }
 
-// Bの表：1行目見出しスキップ、A列(0)=品番、B列(1)=外箱、C列(2)=内箱、D列(3)=小箱
-function parseTableBCsvText(text) {
+async function parseTableBCsvText(text) {
   const lines = text.split(/\r\n|\n|\r/);
   const mapB = {};
   for (let i = 1; i < lines.length; i++) {
@@ -77,12 +75,11 @@ function parseTableBCsvText(text) {
     };
   }
   csvTableB = mapB;
-  localStorage.setItem(TABLE_B_KEY, JSON.stringify(csvTableB));
+  await idbSet(TABLE_B_KEY, csvTableB);
 }
 
-// Aの表とBの表を突合して各品番の照合ステップを生成
-function processMasterCsvTables() {
-  const storedProfiles = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+async function processMasterCsvTables() {
+  const storedProfiles = (await idbGet(STORAGE_KEY)) || {};
   const allParts = new Set([
     ...Object.keys(csvTableA),
     ...Object.keys(csvTableB)
@@ -92,7 +89,6 @@ function processMasterCsvTables() {
 
   allParts.forEach(partNo => {
     const rawCodes = csvTableA[partNo] || [];
-    // Aの表は下の行から「外箱 ➔ 内箱 ➔ 小箱」の順なので反転させる
     const codesFromBottom = rawCodes.slice().reverse();
     const bInfo = csvTableB[partNo];
 
@@ -143,15 +139,15 @@ function processMasterCsvTables() {
   });
 
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(storedProfiles));
-    updateProfileDropdowns();
+    await idbSet(STORAGE_KEY, storedProfiles);
+    await updateProfileDropdowns();
     const firstPart = Array.from(allParts)[0];
     if (firstPart && storedProfiles[firstPart]) {
-      loadAdminProfile(firstPart);
+      await loadAdminProfile(firstPart);
     }
-    alert(`CSV連携更新完了！\n・連携品番数: ${updatedCount} 件\n・Aの表(${Object.keys(csvTableA).length}件) × Bの表(${Object.keys(csvTableB).length}件) から照合回数を自動設定しました。`);
+    alert(`CSV連携更新完了！\n・連携品番数: ${updatedCount} 件\n・大容量IndexedDBへ正常に保存されました。`);
   } catch (e) {
-    alert('LocalStorageの容量上限に達しました。不要な品番を削除してください。');
+    alert('保存処理に失敗しました: ' + e.message);
   }
 }
 
@@ -170,7 +166,7 @@ function buildCsvStepObj(boxName, codeVal, refText) {
   };
 }
 
-function resetCsvMasterData() {
+async function resetCsvMasterData() {
   blurActiveInput();
   if (!confirm('読み込んだCSVデータ（Aの表・Bの表）をリセットしますか？')) return;
 
@@ -182,8 +178,8 @@ function resetCsvMasterData() {
 
   csvTableA = {};
   csvTableB = {};
-  localStorage.removeItem(TABLE_A_KEY);
-  localStorage.removeItem(TABLE_B_KEY);
+  await idbDelete(TABLE_A_KEY);
+  await idbDelete(TABLE_B_KEY);
 
   const inputA = document.getElementById('fileCsvA');
   const inputB = document.getElementById('fileCsvB');
@@ -191,7 +187,7 @@ function resetCsvMasterData() {
   if (inputB) inputB.value = '';
 
   if (keepCustom) {
-    const storedProfiles = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+    const storedProfiles = (await idbGet(STORAGE_KEY)) || {};
     Object.keys(storedProfiles).forEach(partNo => {
       const customSteps = (storedProfiles[partNo].stepsData || []).filter(s => !s.fromCsv);
       if (customSteps.length > 0) {
@@ -200,14 +196,14 @@ function resetCsvMasterData() {
         delete storedProfiles[partNo];
       }
     });
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(storedProfiles));
+    await idbSet(STORAGE_KEY, storedProfiles);
   } else {
-    localStorage.removeItem(STORAGE_KEY);
+    await idbDelete(STORAGE_KEY);
   }
 
   window.adminActivePart = '';
   window.adminStepsData = [];
-  updateProfileDropdowns();
+  await updateProfileDropdowns();
   renderAdminStepsList();
   drawAdminCanvas();
   alert('CSVデータをリセットしました。');
