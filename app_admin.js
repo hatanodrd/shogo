@@ -1,5 +1,5 @@
 // =========================================================
-// app_admin.js : 画面遷移・カメラ描画・管理画面ステップ編成・イベント統合
+// app_admin.js : 画面遷移・管理画面ステップ編成・IndexedDB連携
 // =========================================================
 window.adminActivePart = '';
 window.adminStepsData = [];
@@ -17,10 +17,10 @@ const adminCanvas = document.getElementById('adminCanvas');
 const adminCtx = adminCanvas.getContext('2d', { willReadFrequently: true });
 
 window.addEventListener('DOMContentLoaded', async () => {
-  loadSavedConfigs();
+  await loadSavedConfigs();
   setupCanvasTouchAndMouse();
   setupKeyboardShortcuts();
-  updateProfileDropdowns();
+  await updateProfileDropdowns();
   await initAI();
 });
 
@@ -38,7 +38,7 @@ async function navigateTo(pageId) {
   document.getElementById('btnBackToTop').style.display = (pageId === 'topMenuPage') ? 'none' : 'inline-flex';
   document.getElementById('btnBackToPartScan').style.display = (pageId === 'inspectPage') ? 'inline-flex' : 'none';
 
-  updateProfileDropdowns();
+  await updateProfileDropdowns();
 
   if (pageId === 'inspectPage') {
     await startMainCamera();
@@ -147,10 +147,10 @@ function drawAdminCanvas() {
 }
 
 // =========================================================
-// 管理者用：品番・ステップ編集
+// 管理者用：品番・ステップ編集 (IndexedDB対応)
 // =========================================================
-function updateProfileDropdowns() {
-  const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+async function updateProfileDropdowns() {
+  const stored = (await idbGet(STORAGE_KEY)) || {};
   const keys = Object.keys(stored).sort();
 
   document.getElementById('topRegisteredCount').textContent = keys.length;
@@ -175,11 +175,11 @@ function updateProfileDropdowns() {
   }
 }
 
-function createOrSwitchAdminProfile() {
+async function createOrSwitchAdminProfile() {
   blurActiveInput();
   const name = normalizeCodeString(document.getElementById('txtNewProfileName').value);
   if (!name) return alert('品番名を入力してください');
-  const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+  const stored = (await idbGet(STORAGE_KEY)) || {};
   if (!stored[name]) {
     stored[name] = {
       stepsData: [{
@@ -194,17 +194,17 @@ function createOrSwitchAdminProfile() {
         expectedBarcode: ''
       }]
     };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(stored));
+    await idbSet(STORAGE_KEY, stored);
   }
   document.getElementById('txtNewProfileName').value = '';
-  updateProfileDropdowns();
-  loadAdminProfile(name);
+  await updateProfileDropdowns();
+  await loadAdminProfile(name);
 }
 
-function loadAdminProfile(partNo) {
+async function loadAdminProfile(partNo) {
   blurActiveInput();
   if (!partNo) return;
-  const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+  const stored = (await idbGet(STORAGE_KEY)) || {};
   if (!stored[partNo]) return;
   window.adminActivePart = partNo;
   window.adminStepsData = stored[partNo].stepsData || [];
@@ -214,31 +214,31 @@ function loadAdminProfile(partNo) {
   drawAdminCanvas();
 }
 
-function autoSaveAdminProfile() {
+async function autoSaveAdminProfile() {
   if (!window.adminActivePart) return;
-  const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+  const stored = (await idbGet(STORAGE_KEY)) || {};
   stored[window.adminActivePart] = { stepsData: window.adminStepsData };
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(stored));
-  updateProfileDropdowns();
+  await idbSet(STORAGE_KEY, stored);
+  await updateProfileDropdowns();
 }
 
-function saveCurrentAdminProfileExplicit() {
+async function saveCurrentAdminProfileExplicit() {
   blurActiveInput();
   if (!window.adminActivePart) return alert('品番を選択してください');
-  autoSaveAdminProfile();
+  await autoSaveAdminProfile();
   alert(`品番 [ ${window.adminActivePart} ] の検査ステップ設定を保存しました。`);
 }
 
-function deleteAdminProfile() {
+async function deleteAdminProfile() {
   blurActiveInput();
   if (!window.adminActivePart) return;
   if (!confirm(`品番 [ ${window.adminActivePart} ] を削除しますか？`)) return;
-  const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+  const stored = (await idbGet(STORAGE_KEY)) || {};
   delete stored[window.adminActivePart];
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(stored));
+  await idbSet(STORAGE_KEY, stored);
   window.adminActivePart = '';
   window.adminStepsData = [];
-  updateProfileDropdowns();
+  await updateProfileDropdowns();
   renderAdminStepsList();
 }
 
@@ -251,13 +251,12 @@ function renderAdminStepsList() {
 
   container.innerHTML = window.adminStepsData.map((s, idx) => {
     const isSel = idx === selectedAdminStepIdx ? 'selected' : '';
-    const originCls = s.fromCsv ? 'from-csv' : 'custom-step';
     const originBadge = s.fromCsv
       ? `<span style="font-size:0.72rem; background:var(--primary-light); color:var(--primary-dark); padding:2px 6px; border-radius:4px; font-weight:700;">CSV連携${s.refName ? ` (${s.refName})` : ''}</span>`
       : `<span style="font-size:0.72rem; background:var(--ai-light); color:var(--ai-color); padding:2px 6px; border-radius:4px; font-weight:700;">追加ステップ</span>`;
 
     return `
-      <div class="step-admin-item ${isSel} ${originCls}" onclick="selectAdminStep(${idx})">
+      <div class="step-admin-item ${isSel} ${s.fromCsv ? 'from-csv' : 'custom-step'}" onclick="selectAdminStep(${idx})">
         <div style="display:flex; justify-content:space-between; align-items:center; gap:4px; flex-wrap:wrap;">
           <strong>Step ${idx + 1}: 【 ${s.name} 】 ${originBadge}</strong>
           <div style="display:flex; gap:4px;">
@@ -303,35 +302,35 @@ function selectAdminStep(idx) {
   drawAdminCanvas();
 }
 
-function updateAdminStepField(idx, field, val) {
+async function updateAdminStepField(idx, field, val) {
   if (!window.adminStepsData[idx]) return;
   window.adminStepsData[idx][field] = val;
-  autoSaveAdminProfile();
+  await autoSaveAdminProfile();
   renderAdminStepsList();
   drawAdminCanvas();
 }
 
-function moveAdminStep(idx, dir) {
+async function moveAdminStep(idx, dir) {
   const target = idx + dir;
   if (target < 0 || target >= window.adminStepsData.length) return;
   const temp = window.adminStepsData[idx];
   window.adminStepsData[idx] = window.adminStepsData[target];
   window.adminStepsData[target] = temp;
   selectedAdminStepIdx = target;
-  autoSaveAdminProfile();
+  await autoSaveAdminProfile();
   renderAdminStepsList();
   drawAdminCanvas();
 }
 
-function deleteAdminStep(idx) {
+async function deleteAdminStep(idx) {
   window.adminStepsData.splice(idx, 1);
   selectedAdminStepIdx = Math.max(0, window.adminStepsData.length - 1);
-  autoSaveAdminProfile();
+  await autoSaveAdminProfile();
   renderAdminStepsList();
   drawAdminCanvas();
 }
 
-function addAdminCustomStep(type) {
+async function addAdminCustomStep(type) {
   blurActiveInput();
   if (!window.adminActivePart) return alert('先に品番を選択または新規作成してください');
   window.adminStepsData.push({
@@ -346,12 +345,12 @@ function addAdminCustomStep(type) {
     expectedBarcode: ''
   });
   selectedAdminStepIdx = window.adminStepsData.length - 1;
-  autoSaveAdminProfile();
+  await autoSaveAdminProfile();
   renderAdminStepsList();
   drawAdminCanvas();
 }
 
-function duplicateSelectedStep() {
+async function duplicateSelectedStep() {
   const cur = window.adminStepsData[selectedAdminStepIdx];
   if (!cur) return;
   const copy = JSON.parse(JSON.stringify(cur));
@@ -359,23 +358,23 @@ function duplicateSelectedStep() {
   copy.fromCsv = false;
   window.adminStepsData.push(copy);
   selectedAdminStepIdx = window.adminStepsData.length - 1;
-  autoSaveAdminProfile();
+  await autoSaveAdminProfile();
   renderAdminStepsList();
   drawAdminCanvas();
 }
 
-function setSelectedStepFullFrame() {
+async function setSelectedStepFullFrame() {
   const cur = window.adminStepsData[selectedAdminStepIdx];
   if (!cur) return;
   cur.isFullFrame = true;
   cur.x = 0; cur.y = 0;
   cur.w = adminCanvas.width; cur.h = adminCanvas.height;
   cur.baseW = adminCanvas.width; cur.baseH = adminCanvas.height;
-  autoSaveAdminProfile();
+  await autoSaveAdminProfile();
   drawAdminCanvas();
 }
 
-function nudgeAdminStep(dx, dy, dw, dh) {
+async function nudgeAdminStep(dx, dy, dw, dh) {
   const s = window.adminStepsData[selectedAdminStepIdx];
   if (!s) return;
   s.isFullFrame = false;
@@ -385,7 +384,7 @@ function nudgeAdminStep(dx, dy, dw, dh) {
   s.y = Math.max(0, Math.min(adminCanvas.height - 40, (s.y || 0) + dy));
   s.w = Math.max(40, Math.min(adminCanvas.width - s.x, (s.w || adminCanvas.width) + dw));
   s.h = Math.max(40, Math.min(adminCanvas.height - s.y, (s.h || adminCanvas.height) + dh));
-  autoSaveAdminProfile();
+  await autoSaveAdminProfile();
   drawAdminCanvas();
 }
 
@@ -396,13 +395,13 @@ async function registerBakerySample(idx) {
   if (!s.bakerySamples) s.bakerySamples = [];
   s.bakerySamples.push(vec);
   playBuzzerPattern('OK');
-  autoSaveAdminProfile();
+  await autoSaveAdminProfile();
   renderAdminStepsList();
 }
 
-function clearBakerySamples(idx) {
+async function clearBakerySamples(idx) {
   window.adminStepsData[idx].bakerySamples = [];
-  autoSaveAdminProfile();
+  await autoSaveAdminProfile();
   renderAdminStepsList();
 }
 
@@ -413,7 +412,7 @@ async function captureExpectedBarcodeFromCam(idx) {
   if (!res) return alert('枠内からコードを読み取れませんでした');
   s.expectedBarcode = applyQrSubstring(res.value, res.isQr);
   playBuzzerPattern('OK');
-  autoSaveAdminProfile();
+  await autoSaveAdminProfile();
   renderAdminStepsList();
 }
 
@@ -450,10 +449,10 @@ function setupCanvasTouchAndMouse() {
     s.h = Math.max(30, Math.abs(p.y - dragStartY));
     drawAdminCanvas();
   }
-  function onEnd() {
+  async function onEnd() {
     if (!isDraggingRoi) return;
     isDraggingRoi = false;
-    autoSaveAdminProfile();
+    await autoSaveAdminProfile();
   }
   adminCanvas.addEventListener('mousedown', onStart);
   adminCanvas.addEventListener('mousemove', onMove);
@@ -463,9 +462,9 @@ function setupCanvasTouchAndMouse() {
   adminCanvas.addEventListener('touchend', onEnd);
 }
 
-function exportAllProfilesJson() {
+async function exportAllProfilesJson() {
   const data = {
-    profiles: JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'),
+    profiles: (await idbGet(STORAGE_KEY)) || {},
     csvTableA,
     csvTableB,
     qrRangeConfig,
@@ -482,15 +481,15 @@ function importAllProfilesJson(e) {
   const file = e.target.files[0];
   if (!file) return;
   const reader = new FileReader();
-  reader.onload = (evt) => {
+  reader.onload = async (evt) => {
     try {
       const obj = JSON.parse(evt.target.result);
-      if (obj.profiles) localStorage.setItem(STORAGE_KEY, JSON.stringify(obj.profiles));
-      if (obj.csvTableA) { csvTableA = obj.csvTableA; localStorage.setItem(TABLE_A_KEY, JSON.stringify(csvTableA)); }
-      if (obj.csvTableB) { csvTableB = obj.csvTableB; localStorage.setItem(TABLE_B_KEY, JSON.stringify(csvTableB)); }
+      if (obj.profiles) await idbSet(STORAGE_KEY, obj.profiles);
+      if (obj.csvTableA) { csvTableA = obj.csvTableA; await idbSet(TABLE_A_KEY, csvTableA); }
+      if (obj.csvTableB) { csvTableB = obj.csvTableB; await idbSet(TABLE_B_KEY, csvTableB); }
       if (obj.qrRangeConfig) { qrRangeConfig = obj.qrRangeConfig; localStorage.setItem(QR_CONFIG_KEY, JSON.stringify(qrRangeConfig)); }
       if (obj.audioConfig) { audioConfig = obj.audioConfig; localStorage.setItem(AUDIO_CONFIG_KEY, JSON.stringify(audioConfig)); applyAudioConfigToUI(); }
-      updateProfileDropdowns();
+      await updateProfileDropdowns();
       alert('JSON設定データを復元しました。');
     } catch (err) {
       alert('JSONファイルの形式が正しくありません。');
@@ -499,7 +498,6 @@ function importAllProfilesJson(e) {
   reader.readAsText(file);
 }
 
-// 入力欄にフォーカスがなくても外付けスキャナ入力・Spaceキーを受け取る処理
 function setupKeyboardShortcuts() {
   document.getElementById('externalPartInput').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); submitExternalPartInput(); }
@@ -508,7 +506,7 @@ function setupKeyboardShortcuts() {
     if (e.key === 'Enter') { e.preventDefault(); handleWorkerBarcodeInput(); }
   });
 
-  window.addEventListener('keydown', (e) => {
+  window.addEventListener('keydown', async (e) => {
     const tag = (e.target && e.target.tagName) ? e.target.tagName : '';
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
     if (document.getElementById('ngOverlay').style.display === 'flex') return;
@@ -531,7 +529,7 @@ function setupKeyboardShortcuts() {
       if (scanned.length >= 2) {
         e.preventDefault();
         if (activePage === 'partScanPage') {
-          tryStartInspectionWithPart(scanned);
+          await tryStartInspectionWithPart(scanned);
         } else if (activePage === 'inspectPage' && !window.isChatteringCooldown && !isInspectingStep) {
           const step = window.currentSteps[window.currentStepIdx];
           if (step && step.type === 'BARCODE') {
