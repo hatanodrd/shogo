@@ -1,5 +1,5 @@
 // =========================================================
-// config_audio.js : 定数・グローバル状態・IndexedDB・音声＆効果音
+// config_audio.js : 定数・グローバル状態・IndexedDB・大文字小文字設定・音声制御
 // =========================================================
 const DB_NAME = 'pokayoke_idb_v1';
 const DB_STORE = 'app_data';
@@ -8,6 +8,7 @@ const STORAGE_KEY = 'pokayoke_step_profiles_v5';
 const TABLE_A_KEY = 'pokayoke_csv_table_a_v5';
 const TABLE_B_KEY = 'pokayoke_csv_table_b_v5';
 const QR_CONFIG_KEY = 'pokayoke_qr_range_config_v5';
+const CASE_CONFIG_KEY = 'pokayoke_ignore_case_v5';
 const AUDIO_CONFIG_KEY = 'pokayoke_audio_config_v5';
 const LOG_STORAGE_KEY = 'pokayoke_inspection_logs_v5';
 const BOX_NAMES = ['外箱', '内箱', '小箱'];
@@ -15,6 +16,9 @@ const BOX_NAMES = ['外箱', '内箱', '小箱'];
 let csvTableA = {};
 let csvTableB = {};
 let qrRangeConfig = { start: null, end: null };
+
+// 大文字・小文字を無視するかどうかの設定（初期値: true = 区別しない）
+let isIgnoreCase = true;
 
 // 音声・ブザー設定
 let isSpeechEnabled = true;
@@ -49,6 +53,7 @@ let isCamRunning = false;
 
 // =========================================================
 // 🗄️ IndexedDB 非同期ラッパー（容量無制限ストレージ）
+// （※ 大文字・小文字無視ON時は既存の登録キーも自動で大文字小文字を同一視）
 // =========================================================
 function openAppDatabase() {
   return new Promise((resolve, reject) => {
@@ -70,7 +75,19 @@ async function idbGet(key) {
     const tx = db.transaction(DB_STORE, 'readonly');
     const store = tx.objectStore(DB_STORE);
     const req = store.get(key);
-    req.onsuccess = () => resolve(req.result !== undefined ? req.result : null);
+    req.onsuccess = () => {
+      let res = req.result !== undefined ? req.result : null;
+      // 品番プロファイル取得時、大文字・小文字無視がONなら既存キーの大文字表記も透過アクセス可能にする
+      if (key === STORAGE_KEY && res && typeof res === 'object' && isIgnoreCase) {
+        const clone = Object.assign({}, res);
+        Object.keys(res).forEach(k => {
+          const upKey = String(k).normalize('NFKC').trim().toUpperCase();
+          if (!clone[upKey]) clone[upKey] = res[k];
+        });
+        return resolve(clone);
+      }
+      resolve(res);
+    };
     req.onerror = () => reject(req.error);
   });
 }
@@ -103,9 +120,59 @@ function blurActiveInput() {
   }
 }
 
+// =========================================================
+// 🔤 文字列正規化（大文字・小文字無視設定の反映）
+// =========================================================
 function normalizeCodeString(str) {
   if (!str) return '';
-  return String(str).normalize('NFKC').trim();
+  const cleaned = String(str).normalize('NFKC').trim();
+  return isIgnoreCase ? cleaned.toUpperCase() : cleaned;
+}
+
+// 管理画面の「③ QRコード読取桁数設定」カード内に大文字・小文字切替UIを自動生成
+function injectIgnoreCaseSettingUI() {
+  if (document.getElementById('ignoreCaseSettingRow')) return;
+  const numQrStart = document.getElementById('numQrStart');
+  if (!numQrStart) return;
+  const card = numQrStart.closest('.card');
+  if (!card) return;
+
+  const titleEl = card.querySelector('.card-title');
+  if (titleEl) {
+    titleEl.textContent = '③ システム共通・コード読取ルール設定（QR桁数 ／ 大文字・小文字判定）';
+  }
+
+  const row = document.createElement('div');
+  row.id = 'ignoreCaseSettingRow';
+  row.style.cssText = 'margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;';
+  row.innerHTML = `
+    <div>
+      <strong style="font-size:0.9rem; color:var(--primary-dark);">🔤 アルファベットの大文字・小文字の判定</strong>
+      <div style="font-size:0.78rem; color:var(--muted);">ONにすると、バーコードや品番の「abc」と「ABC」を同じ文字として合格判定します</div>
+    </div>
+    <button type="button" class="btn" id="btnToggleIgnoreCase" onclick="toggleIgnoreCaseSetting()" style="min-width: 240px;"></button>
+  `;
+  card.appendChild(row);
+  updateIgnoreCaseUI();
+}
+
+function updateIgnoreCaseUI() {
+  const btn = document.getElementById('btnToggleIgnoreCase');
+  if (!btn) return;
+  if (isIgnoreCase) {
+    btn.className = 'btn btn-success';
+    btn.textContent = '✅ 大文字・小文字を無視: ON (同一視)';
+  } else {
+    btn.className = 'btn btn-dark';
+    btn.textContent = '❌ 大文字・小文字を無視: OFF (厳密に区別)';
+  }
+}
+
+function toggleIgnoreCaseSetting() {
+  blurActiveInput();
+  isIgnoreCase = !isIgnoreCase;
+  localStorage.setItem(CASE_CONFIG_KEY, JSON.stringify(isIgnoreCase));
+  updateIgnoreCaseUI();
 }
 
 async function loadSavedConfigs() {
@@ -117,6 +184,11 @@ async function loadSavedConfigs() {
     if (qrRangeConfig.start) document.getElementById('numQrStart').value = qrRangeConfig.start;
     if (qrRangeConfig.end) document.getElementById('numQrEnd').value = qrRangeConfig.end;
 
+    const savedCase = localStorage.getItem(CASE_CONFIG_KEY);
+    if (savedCase !== null) {
+      isIgnoreCase = JSON.parse(savedCase);
+    }
+
     const savedAudio = JSON.parse(localStorage.getItem(AUDIO_CONFIG_KEY) || 'null');
     if (savedAudio) {
       audioConfig = Object.assign(audioConfig, savedAudio);
@@ -125,6 +197,7 @@ async function loadSavedConfigs() {
   } catch (e) {
     console.error('Config load failed:', e);
   }
+  injectIgnoreCaseSettingUI();
   initSpeechVoices();
 }
 
