@@ -103,7 +103,8 @@ async function startPartOcrScanner() {
       document.getElementById('ocrRoiBadge').textContent = 'OCRエンジン初期化中...';
       tesseractWorker = await Tesseract.createWorker('eng');
       await tesseractWorker.setParameters({
-        tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_',
+        // ★ 括弧 ()[] を認識許可リストに追加 ★
+        tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_()[]',
         tessedit_pageseg_mode: '7'
       });
     }
@@ -199,7 +200,8 @@ async function processOcrFrame(forceAccept) {
 
       if (tesseractWorker) {
         const { data: { text } } = await tesseractWorker.recognize(dbgCanvas);
-        const cleaned = normalizeCodeString(text).replace(/[^A-Za-z0-9_-]/g, '');
+        // ★ 括弧 ()[] が削除されないようにフィルターを拡張 ★
+        const cleaned = normalizeCodeString(text).replace(/[^A-Za-z0-9_\-()\[\]]/g, '');
         if (cleaned.length >= 2) {
           document.getElementById('ocrRoiBadge').textContent = `読取中: ${cleaned}`;
           const stored = (await idbGet(STORAGE_KEY)) || {};
