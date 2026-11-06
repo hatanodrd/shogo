@@ -1,5 +1,5 @@
 // =========================================================
-// scan_ocr.js : 品番QR読取・影除去＆枠可変OCR・外付けリーダー裏受信
+// scan_ocr.js : 品番QR読取・影除去＆枠可変OCR（括弧＆O/0同一視対応）
 // =========================================================
 let partQrScanner = null;
 let isPartQrLocked = false;
@@ -28,7 +28,13 @@ async function tryStartInspectionWithPart(partNo) {
   blurActiveInput();
   const cleaned = normalizeCodeString(partNo);
   const stored = (await idbGet(STORAGE_KEY)) || {};
-  if (!stored[cleaned] || !stored[cleaned].stepsData || stored[cleaned].stepsData.length === 0) {
+
+  // O(オー)と0(ゼロ)同一視設定を考慮してマスタから正式品番を検索
+  const matchedKey = (typeof findMatchingMasterPart === 'function')
+    ? findMatchingMasterPart(cleaned, stored)
+    : (stored[cleaned] ? cleaned : null);
+
+  if (!matchedKey || !stored[matchedKey] || !stored[matchedKey].stepsData || stored[matchedKey].stepsData.length === 0) {
     playBuzzerPattern('NG');
     speakText('この品番は未登録です。設定画面で登録してください');
     triggerBorderFlash('NG');
@@ -36,8 +42,8 @@ async function tryStartInspectionWithPart(partNo) {
     return;
   }
 
-  window.currentInspectPart = cleaned;
-  window.currentSteps = stored[cleaned].stepsData;
+  window.currentInspectPart = matchedKey;
+  window.currentSteps = stored[matchedKey].stepsData;
   window.currentStepIdx = 0;
   window.isChatteringCooldown = false;
   playBuzzerPattern('OK');
@@ -103,7 +109,7 @@ async function startPartOcrScanner() {
       document.getElementById('ocrRoiBadge').textContent = 'OCRエンジン初期化中...';
       tesseractWorker = await Tesseract.createWorker('eng');
       await tesseractWorker.setParameters({
-        // ★ 括弧 ()[] を認識許可リストに追加 ★
+        // 括弧 ()[] も認識対象に含める
         tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_()[]',
         tessedit_pageseg_mode: '7'
       });
@@ -200,14 +206,21 @@ async function processOcrFrame(forceAccept) {
 
       if (tesseractWorker) {
         const { data: { text } } = await tesseractWorker.recognize(dbgCanvas);
-        // ★ 括弧 ()[] が削除されないようにフィルターを拡張 ★
         const cleaned = normalizeCodeString(text).replace(/[^A-Za-z0-9_\-()\[\]]/g, '');
         if (cleaned.length >= 2) {
-          document.getElementById('ocrRoiBadge').textContent = `読取中: ${cleaned}`;
           const stored = (await idbGet(STORAGE_KEY)) || {};
-          if (stored[cleaned] || forceAccept) {
+          // O(オー)と0(ゼロ)同一視設定を使って登録マスタを検索
+          const matchedKey = (typeof findMatchingMasterPart === 'function')
+            ? findMatchingMasterPart(cleaned, stored)
+            : (stored[cleaned] ? cleaned : null);
+
+          document.getElementById('ocrRoiBadge').textContent = matchedKey
+            ? `一致: ${matchedKey}`
+            : `読取中: ${cleaned}`;
+
+          if (matchedKey || forceAccept) {
             await stopPartScanCameras();
-            await tryStartInspectionWithPart(cleaned);
+            await tryStartInspectionWithPart(matchedKey || cleaned);
           }
         }
       }
