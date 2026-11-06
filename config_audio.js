@@ -1,5 +1,5 @@
 // =========================================================
-// config_audio.js : 定数・IndexedDB・大文字小文字設定・OCR初期値・音声制御
+// config_audio.js : 定数・IndexedDB・大文字小文字・O/0同一視・OCR初期値・音声制御
 // =========================================================
 const DB_NAME = 'pokayoke_idb_v1';
 const DB_STORE = 'app_data';
@@ -9,6 +9,7 @@ const TABLE_A_KEY = 'pokayoke_csv_table_a_v5';
 const TABLE_B_KEY = 'pokayoke_csv_table_b_v5';
 const QR_CONFIG_KEY = 'pokayoke_qr_range_config_v5';
 const CASE_CONFIG_KEY = 'pokayoke_ignore_case_v5';
+const OZERO_CONFIG_KEY = 'pokayoke_ignore_ozero_v5';
 const OCR_CONFIG_KEY = 'pokayoke_ocr_default_config_v5';
 const AUDIO_CONFIG_KEY = 'pokayoke_audio_config_v5';
 const LOG_STORAGE_KEY = 'pokayoke_inspection_logs_v5';
@@ -20,6 +21,9 @@ let qrRangeConfig = { start: null, end: null };
 
 // 大文字・小文字を無視するかどうかの設定（初期値: true = 区別しない）
 let isIgnoreCase = true;
+
+// OCRで「O（オー）」と「0（ゼロ）」を同一視するかどうかの設定（初期値: true = 区別しない）
+let isIgnoreOandZero = true;
 
 // OCR初期値設定（横幅・高さ・影除去感度）
 let ocrDefaultConfig = {
@@ -127,7 +131,7 @@ function blurActiveInput() {
 }
 
 // =========================================================
-// 🔤 文字列正規化（大文字・小文字無視設定の反映）
+// 🔤 文字列正規化 ＆ O(オー)/0(ゼロ) あいまい一致解決
 // =========================================================
 function normalizeCodeString(str) {
   if (!str) return '';
@@ -135,8 +139,36 @@ function normalizeCodeString(str) {
   return isIgnoreCase ? cleaned.toUpperCase() : cleaned;
 }
 
+// 比較用に O / o / 0 をすべて '0' に統一したキーを返す
+function unifyOandZeroKey(str) {
+  const norm = normalizeCodeString(str);
+  return isIgnoreOandZero ? norm.replace(/[Oo0]/g, '0') : norm;
+}
+
+// 読み取った文字列から登録済みマスタ品番を検索（Oと0の同一視ON時は自動で正式品番名を返す）
+function findMatchingMasterPart(rawPartNo, storedProfiles) {
+  const cleaned = normalizeCodeString(rawPartNo);
+  if (!cleaned || !storedProfiles) return null;
+
+  // 1. そのまま完全一致すればそれを返す
+  if (storedProfiles[cleaned]) return cleaned;
+
+  // 2. Oと0の同一視がONの場合、Oと0を統一してマスタ側と突合する
+  if (isIgnoreOandZero) {
+    const targetUnified = unifyOandZeroKey(cleaned);
+    const keys = Object.keys(storedProfiles);
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i];
+      if (unifyOandZeroKey(k) === targetUnified) {
+        return k;
+      }
+    }
+  }
+  return null;
+}
+
 // =========================================================
-// ⚙️ 管理画面への「大文字・小文字判定」＆「OCR初期値設定」UI自動挿入
+// ⚙️ 管理画面への拡張設定UI（大文字小文字 ／ Oと0同一視 ／ OCR初期値）自動挿入
 // =========================================================
 function injectCustomAdminSettingsUI() {
   const numQrStart = document.getElementById('numQrStart');
@@ -146,7 +178,7 @@ function injectCustomAdminSettingsUI() {
 
   const titleEl = card.querySelector('.card-title');
   if (titleEl) {
-    titleEl.textContent = '③ システム共通・読取ルール設定（QR桁数 ／ 大文字・小文字 ／ OCR初期値）';
+    titleEl.textContent = '③ システム共通・読取ルール設定（QR桁数 ／ 大文字・小文字 ／ Oと0区別 ／ OCR初期値）';
   }
 
   // 1. 大文字・小文字無視トグル行
@@ -159,12 +191,27 @@ function injectCustomAdminSettingsUI() {
         <strong style="font-size:0.9rem; color:var(--primary-dark);">🔤 アルファベットの大文字・小文字の判定</strong>
         <div style="font-size:0.78rem; color:var(--muted);">ONにすると、バーコードや品番の「abc」と「ABC」を同じ文字として合格判定します</div>
       </div>
-      <button type="button" class="btn" id="btnToggleIgnoreCase" onclick="toggleIgnoreCaseSetting()" style="min-width: 240px;"></button>
+      <button type="button" class="btn" id="btnToggleIgnoreCase" onclick="toggleIgnoreCaseSetting()" style="min-width: 250px;"></button>
     `;
     card.appendChild(caseRow);
   }
 
-  // 2. OCR初期値（枠幅・枠高・影除去感度）設定ブロック
+  // 2. OCRの「O（オー）」と「0（ゼロ）」同一視トグル行
+  if (!document.getElementById('ignoreOZeroSettingRow')) {
+    const ozeroRow = document.createElement('div');
+    ozeroRow.id = 'ignoreOZeroSettingRow';
+    ozeroRow.style.cssText = 'margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;';
+    ozeroRow.innerHTML = `
+      <div>
+        <strong style="font-size:0.9rem; color:var(--primary-dark);">🔄 OCR読取時の「O（オー）」と「0（ゼロ）」の区別</strong>
+        <div style="font-size:0.78rem; color:var(--muted);">ONにすると、OCRで英字の「O」と数字の「0」が入れ替わって認識されても同じ品番として判定します</div>
+      </div>
+      <button type="button" class="btn" id="btnToggleIgnoreOZero" onclick="toggleIgnoreOZeroSetting()" style="min-width: 250px;"></button>
+    `;
+    card.appendChild(ozeroRow);
+  }
+
+  // 3. OCR初期値（枠幅・枠高・影除去感度）設定ブロック
   if (!document.getElementById('ocrDefaultSettingRow')) {
     const ocrRow = document.createElement('div');
     ocrRow.id = 'ocrDefaultSettingRow';
@@ -200,6 +247,7 @@ function injectCustomAdminSettingsUI() {
   }
 
   updateIgnoreCaseUI();
+  updateIgnoreOZeroUI();
   applyOcrDefaultToUI();
 }
 
@@ -219,16 +267,35 @@ function toggleIgnoreCaseSetting() {
   blurActiveInput();
   isIgnoreCase = !isIgnoreCase;
   localStorage.setItem(CASE_CONFIG_KEY, JSON.stringify(isIgnoreCase));
+  saveAudioSettings();
   updateIgnoreCaseUI();
 }
 
-// OCR初期値を管理画面UIと作業者用OCRスライダーの両方に反映
+function updateIgnoreOZeroUI() {
+  const btn = document.getElementById('btnToggleIgnoreOZero');
+  if (!btn) return;
+  if (isIgnoreOandZero) {
+    btn.className = 'btn btn-success';
+    btn.textContent = '✅ O(オー)と0(ゼロ)を無視: ON (同一視)';
+  } else {
+    btn.className = 'btn btn-dark';
+    btn.textContent = '❌ O(オー)と0(ゼロ)を無視: OFF (厳密に区別)';
+  }
+}
+
+function toggleIgnoreOZeroSetting() {
+  blurActiveInput();
+  isIgnoreOandZero = !isIgnoreOandZero;
+  localStorage.setItem(OZERO_CONFIG_KEY, JSON.stringify(isIgnoreOandZero));
+  saveAudioSettings();
+  updateIgnoreOZeroUI();
+}
+
 function applyOcrDefaultToUI() {
   const w = ocrDefaultConfig.width ?? 75;
   const h = ocrDefaultConfig.height ?? 14;
   const s = ocrDefaultConfig.shadow ?? 14;
 
-  // 管理画面側のスライダー
   const aW = document.getElementById('rngAdminOcrW');
   const aH = document.getElementById('rngAdminOcrH');
   const aS = document.getElementById('rngAdminOcrShadow');
@@ -236,7 +303,6 @@ function applyOcrDefaultToUI() {
   if (aH) { aH.value = h; document.getElementById('lblAdminOcrH').textContent = h; }
   if (aS) { aS.value = s; document.getElementById('lblAdminOcrShadow').textContent = s; }
 
-  // 作業者画面側のOCRスライダーと緑枠スタイル
   const wW = document.getElementById('rngOcrW');
   const wH = document.getElementById('rngOcrH');
   const wS = document.getElementById('rngOcrShadow');
@@ -259,6 +325,7 @@ function saveOcrDefaultConfig() {
 
   ocrDefaultConfig = { width: w, height: h, shadow: s };
   localStorage.setItem(OCR_CONFIG_KEY, JSON.stringify(ocrDefaultConfig));
+  saveAudioSettings();
   applyOcrDefaultToUI();
   alert(`OCR初期値を保存しました。\n・枠の横幅: ${w}%\n・枠の高さ: ${h}%\n・影除去感度: ${s}`);
 }
@@ -267,11 +334,11 @@ function resetOcrDefaultConfig() {
   blurActiveInput();
   ocrDefaultConfig = { width: 75, height: 14, shadow: 14 };
   localStorage.setItem(OCR_CONFIG_KEY, JSON.stringify(ocrDefaultConfig));
+  saveAudioSettings();
   applyOcrDefaultToUI();
   alert('OCR初期値を標準（横幅:75% / 高さ:14% / 影除去感度:14）に戻しました。');
 }
 
-// OCRカメラ起動時に毎回初期値が自動適用されるようにフックを設定
 function hookPartOcrScannerStart() {
   if (typeof window.startPartOcrScanner === 'function' && !window._isOcrStartHooked) {
     const origStart = window.startPartOcrScanner;
@@ -297,6 +364,11 @@ async function loadSavedConfigs() {
       isIgnoreCase = JSON.parse(savedCase);
     }
 
+    const savedOZero = localStorage.getItem(OZERO_CONFIG_KEY);
+    if (savedOZero !== null) {
+      isIgnoreOandZero = JSON.parse(savedOZero);
+    }
+
     const savedOcr = JSON.parse(localStorage.getItem(OCR_CONFIG_KEY) || 'null');
     if (savedOcr) {
       ocrDefaultConfig = Object.assign(ocrDefaultConfig, savedOcr);
@@ -308,6 +380,9 @@ async function loadSavedConfigs() {
     }
     if (audioConfig.ignoreCase !== undefined && savedCase === null) {
       isIgnoreCase = audioConfig.ignoreCase;
+    }
+    if (audioConfig.ignoreOandZero !== undefined && savedOZero === null) {
+      isIgnoreOandZero = audioConfig.ignoreOandZero;
     }
     if (audioConfig.ocrDefaultConfig && !savedOcr) {
       ocrDefaultConfig = Object.assign(ocrDefaultConfig, audioConfig.ocrDefaultConfig);
@@ -354,7 +429,6 @@ function applyAudioConfigToUI() {
   if (rVol) { rVol.value = Math.round(audioConfig.volume * 100); document.getElementById('lblVoiceVol').textContent = Math.round(audioConfig.volume * 100); }
   if (sBuz) { sBuz.value = audioConfig.buzzerPreset || 'STANDARD'; }
 
-  // JSONインポート時にもOCR初期値と大文字小文字設定が復元されるように同期
   if (audioConfig.ocrDefaultConfig) {
     ocrDefaultConfig = Object.assign(ocrDefaultConfig, audioConfig.ocrDefaultConfig);
     localStorage.setItem(OCR_CONFIG_KEY, JSON.stringify(ocrDefaultConfig));
@@ -364,6 +438,11 @@ function applyAudioConfigToUI() {
     isIgnoreCase = audioConfig.ignoreCase;
     localStorage.setItem(CASE_CONFIG_KEY, JSON.stringify(isIgnoreCase));
     updateIgnoreCaseUI();
+  }
+  if (audioConfig.ignoreOandZero !== undefined) {
+    isIgnoreOandZero = audioConfig.ignoreOandZero;
+    localStorage.setItem(OZERO_CONFIG_KEY, JSON.stringify(isIgnoreOandZero));
+    updateIgnoreOZeroUI();
   }
 }
 
@@ -383,9 +462,9 @@ function saveAudioSettings() {
   audioConfig.pitch = parseFloat(document.getElementById('rngVoicePitch')?.value) || 1.0;
   audioConfig.volume = (parseInt(document.getElementById('rngVoiceVol')?.value, 10) || 100) / 100;
   audioConfig.buzzerPreset = document.getElementById('selBuzzerPreset')?.value || 'STANDARD';
-  // JSONエクスポート時に一緒に書き出されるようバンドル保持
   audioConfig.ocrDefaultConfig = ocrDefaultConfig;
   audioConfig.ignoreCase = isIgnoreCase;
+  audioConfig.ignoreOandZero = isIgnoreOandZero;
   localStorage.setItem(AUDIO_CONFIG_KEY, JSON.stringify(audioConfig));
 }
 
