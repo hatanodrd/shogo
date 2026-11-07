@@ -1,5 +1,5 @@
 // =========================================================
-// app_admin.js : 画面遷移・材料マスター画面・全体枠固定（枠サイズ変更オフ）版
+// app_admin.js : 画面遷移・材料マスター画面(3連写&ライバル比較テスト対応)・全体枠固定版
 // =========================================================
 window.adminActivePart = '';
 window.adminStepsData = [];
@@ -33,12 +33,10 @@ window.addEventListener('DOMContentLoaded', async () => {
   await initAI();
 });
 
-// HTML側の枠サイズ変更ボタン（「← 左」「幅＋」「枠を100%に戻す」等）を非表示化し、カーソルを標準に戻す
 function disableRoiResizeControlsUI() {
   if (adminCanvas) adminCanvas.style.cursor = 'default';
   if (mainCanvas) mainCanvas.style.cursor = 'default';
 
-  // 設定画面内の「setSelectedStepFullFrame」ボタンと「nudgeAdminStep」ボタン群を非表示にする
   document.querySelectorAll('button[onclick*="setSelectedStepFullFrame"]').forEach(btn => {
     btn.style.display = 'none';
   });
@@ -52,7 +50,6 @@ async function navigateTo(pageId) {
   blurActiveInput();
   headlessScannerBuffer = '';
 
-  // 検査画面へ入る際、作業者IDが未登録なら登録モーダルを強制表示
   if ((pageId === 'partScanPage' || pageId === 'inspectPage') && typeof isWorkerRegistered === 'function') {
     if (!isWorkerRegistered()) {
       playBuzzerPattern('NG');
@@ -68,7 +65,6 @@ async function navigateTo(pageId) {
   }
   stopMainCamera();
 
-  // トップ画面へ戻った場合、作業者IDを「未登録」にリセット
   if (pageId === 'topMenuPage' && typeof clearWorkerRegistration === 'function') {
     clearWorkerRegistration();
   }
@@ -164,7 +160,7 @@ function drawSmartRoiOverlay(ctx, canvasW, canvasH, step, labelPrefix) {
   ctx.lineWidth = 6;
   ctx.strokeRect(coords.x + 3, coords.y + 3, coords.w - 6, coords.h - 6);
 
-  const labelText = `${labelPrefix}${step.name} (${step.type === 'BAKERY' ? '🥐パン屋AI・全体検査' : '📷コード照合'})`;
+  const labelText = `${labelPrefix}${step.name} (${step.type === 'BAKERY' ? '🥐3連写＋ライバル比較AI' : '📷コード照合'})`;
   ctx.font = 'bold 15px sans-serif';
   const textWidth = ctx.measureText(labelText).width;
   const boxW = Math.min(canvasW - 12, textWidth + 18);
@@ -207,7 +203,7 @@ function drawAdminCanvas() {
 }
 
 // =========================================================
-// 🥐 材料マスター登録・編集画面（枠サイズ変更オフ・全体検査固定版）
+// 🥐 材料マスター登録・編集画面（3連写＋ライバル比較テスト搭載）
 // =========================================================
 function injectMaterialMasterPageAndMenu() {
   const topPage = document.getElementById('topMenuPage');
@@ -232,7 +228,7 @@ function injectMaterialMasterPageAndMenu() {
     matPage.id = 'materialMasterPage';
     matPage.innerHTML = `
       <div class="nav-banner" style="background:var(--ai-light); color:var(--ai-color); border-left-color:var(--ai-color);">
-        🥐 パン屋AI 材料マスター登録・編集画面（カメラ画面全体で材料の特徴を学習・照合します）
+        🥐 パン屋AI 材料マスター登録・編集画面（3連写ブレ吸収 ＆ 登録済み他材料とのライバル相対比較に対応）
       </div>
 
       <!-- 材料マスターCSV一括取込カード -->
@@ -313,9 +309,9 @@ function injectMaterialMasterPageAndMenu() {
 
             <div class="card" style="background:#f8fafc; margin-top:auto;">
               <div style="font-size:0.82rem; color:var(--muted); line-height:1.5;">
-                💡 <strong>材料マスターの使いかた:</strong><br>
-                1. カメラを起動して材料を映し、「📸 良品マスターとして追加」で3〜5枚ほど撮影します（常にカメラ枠全体が検査範囲となります）。<br>
-                2. 「⚙️ 検査項目の登録・システム設定」画面を開き、各製品品番のステップで材料マスターを選ぶだけで紐づけできます。
+                💡 <strong>似た形状の材料を見分けるコツ（ライバル相対比較）:</strong><br>
+                1. 似ている別の材料（ライバル品）もそれぞれ材料マスターに3〜5枚ずつ良品登録しておきます。<br>
+                2. 検査時は「3連写で手ブレを吸収」しつつ「登録済みの他の材料マスターすべてと裏側で比較」するため、ライバル品の方が似ている場合は即座にNGとしてブロックします。
               </div>
               <div style="margin-top:10px; display:flex; justify-content:flex-end;">
                 <button type="button" class="btn btn-dark" onclick="navigateTo('adminPage')">⚙️ 製品ごとの設定画面へ移動 ➔</button>
@@ -705,7 +701,7 @@ function renderMaterialEditorPanel() {
       <label style="font-size:0.9rem; font-weight:700;">🎯 標準の合格一致率 (%):</label>
       <div style="display:flex; align-items:center; gap:8px;">
         <input type="number" id="numMatThreshold" value="${th}" min="50" max="99" style="width:85px; font-weight:700; text-align:center;" onchange="updateMaterialThreshold(this.value)">
-        <span style="font-size:0.82rem; color:var(--muted);">% 以上で合格</span>
+        <span style="font-size:0.82rem; color:var(--muted);">% 以上 (相対1位時は-5%まで自動救済)</span>
       </div>
     </div>
 
@@ -724,10 +720,10 @@ function renderMaterialEditorPanel() {
         </button>
       </div>
 
-      <button type="button" class="btn btn-primary" style="padding:10px;" onclick="testCurrentMaterialMasterLive()">
-        🔍 今のカメラ映像でこの材料マスターをテスト照合する
+      <button type="button" class="btn btn-primary" id="btnTestMatMaster" style="padding:10px;" onclick="testCurrentMaterialMasterLive()">
+        🔍 3連写＋他材料ライバル比較でテスト照合する
       </button>
-      <div id="lblMaterialTestResult" style="font-size:0.88rem; font-weight:700; text-align:center; min-height:1.2em;"></div>
+      <div id="lblMaterialTestResult" style="font-size:0.85rem; font-weight:700; text-align:center; min-height:1.4em; white-space:pre-line;"></div>
     </div>
 
     <button type="button" class="btn btn-success" style="padding:12px; font-size:1rem;" onclick="saveMaterialMasterExplicit()">
@@ -785,33 +781,48 @@ async function clearMaterialMasterSamples() {
   renderMaterialEditorPanel();
 }
 
+// 材料マスター画面でのテスト照合（3連写＋他材料ライバル比較）
 async function testCurrentMaterialMasterLive() {
   if (!isCamRunning) return alert('先に「📷 材料撮影用カメラ起動」を押してください');
   const mat = window.materialMastersCache[window.activeMaterialCode];
   if (!mat || !mat.bakerySamples || mat.bakerySamples.length === 0) {
     return alert('先に「📸 良品マスターとして追加」で1枚以上登録してください');
   }
-  const matCanvas = document.getElementById('materialCanvas');
-  const feat = await extractBakeryFeatureVector(matCanvas);
-  let bestSim = 0;
-  mat.bakerySamples.forEach(s => {
-    const sim = computeCosineSimilarity(feat, s) * 100;
-    if (sim > bestSim) bestSim = sim;
-  });
-  const score = Math.round(bestSim);
-  const th = mat.bakeryThreshold || 80;
+
+  const btn = document.getElementById('btnTestMatMaster');
   const resEl = document.getElementById('lblMaterialTestResult');
-  if (score >= th) {
-    playBuzzerPattern('OK');
-    if (resEl) {
-      resEl.style.color = 'var(--success)';
-      resEl.textContent = `✅ テスト判定: 合格！ (一致率 ${score}% / 基準 ${th}%)`;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '📸 3連写＆ライバル比較中...';
+  }
+
+  try {
+    const matCanvas = document.getElementById('materialCanvas');
+    const evalRes = await evaluateBakeryWithBurstAndRivals(
+      matCanvas,
+      mat.bakerySamples,
+      mat.bakeryThreshold || 80,
+      window.activeMaterialCode,
+      window.materialMastersCache
+    );
+
+    if (evalRes.passed) {
+      playBuzzerPattern('OK');
+      if (resEl) {
+        resEl.style.color = 'var(--success)';
+        resEl.textContent = `✅ テスト判定: 合格！ (${evalRes.detail})`;
+      }
+    } else {
+      playBuzzerPattern('NG');
+      if (resEl) {
+        resEl.style.color = 'var(--danger)';
+        resEl.textContent = `⚠️ テスト判定: NG\n${evalRes.reason}`;
+      }
     }
-  } else {
-    playBuzzerPattern('NG');
-    if (resEl) {
-      resEl.style.color = 'var(--danger)';
-      resEl.textContent = `⚠️ テスト判定: NG (一致率 ${score}% / 基準 ${th}%)`;
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '🔍 3連写＋他材料ライバル比較でテスト照合する';
     }
   }
 }
@@ -850,7 +861,6 @@ function drawMaterialCanvas() {
   }
 }
 
-// 旧ボタン互換用の空関数（枠変更オフのため何もしない）
 async function setSelectedStepFullFrame() {}
 async function nudgeAdminStep() {}
 async function setMaterialFullFrame() {}
@@ -1038,7 +1048,7 @@ function renderAdminStepsList() {
     const isSel = idx === selectedAdminStepIdx ? 'selected' : '';
     const originBadge = s.fromCsv
       ? `<span style="font-size:0.72rem; background:var(--primary-light); color:var(--primary-dark); padding:2px 6px; border-radius:4px; font-weight:700;">CSV連携${s.refName ? ` (${s.refName})` : ''}</span>`
-      : `<span style="font-size:0.72rem; background:var(--ai-light); color:var(--ai-color); padding:2px 6px; border-radius:4px; font-weight:700;">${s.type === 'BAKERY' ? '材料マスター照合(全体枠)' : '追加ステップ'}</span>`;
+      : `<span style="font-size:0.72rem; background:var(--ai-light); color:var(--ai-color); padding:2px 6px; border-radius:4px; font-weight:700;">${s.type === 'BAKERY' ? '3連写＋ライバル比較AI' : '追加ステップ'}</span>`;
 
     const linkedMat = s.materialCode ? materials[s.materialCode] : null;
     const matSampleCnt = linkedMat ? (linkedMat.bakerySamples || []).length : (s.bakerySamples || []).length;
@@ -1089,7 +1099,7 @@ function renderAdminStepsList() {
             <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
               <span>
                 状態: ${s.materialCode
-                  ? (linkedMat ? `<strong style="color:var(--success);">✅ 材料 [${s.materialCode}] 連携中 (良品:${matSampleCnt}枚 / 全体枠固定)</strong>` : `<strong style="color:var(--danger);">⚠️ 材料 [${s.materialCode}] が未登録</strong>`)
+                  ? (linkedMat ? `<strong style="color:var(--success);">✅ 材料 [${s.materialCode}] 連携中 (良品:${matSampleCnt}枚)</strong>` : `<strong style="color:var(--danger);">⚠️ 材料 [${s.materialCode}] が未登録</strong>`)
                   : `<span style="color:var(--muted);">材料マスター未選択 (個別良品:${matSampleCnt}枚)</span>`}
               </span>
               <div style="display:flex; gap:6px; align-items:center;">
