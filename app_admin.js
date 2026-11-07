@@ -1,5 +1,5 @@
 // =========================================================
-// app_admin.js : 画面遷移・材料マスター画面・製品ステップへの材料マスター紐づけ
+// app_admin.js : 画面遷移・材料マスター画面(CSV一括取込対応)・製品ステップ紐づけ
 // =========================================================
 window.adminActivePart = '';
 window.adminStepsData = [];
@@ -197,7 +197,7 @@ function drawAdminCanvas() {
 }
 
 // =========================================================
-// 🥐 材料マスター登録・編集画面の動的生成 ＆ 管理ロジック
+// 🥐 材料マスター登録・編集画面の動的生成 ＆ CSV一括取込ロジック
 // =========================================================
 function injectMaterialMasterPageAndMenu() {
   // 1. トップ画面のメニューに「🥐 材料マスターの登録・編集」ボタンを追加
@@ -211,9 +211,8 @@ function injectMaterialMasterPageAndMenu() {
       matBtn.onclick = () => navigateTo('materialMasterPage');
       matBtn.innerHTML = `
         <span>🥐 パン屋AI 材料マスターの登録・編集（管理者用）</span>
-        <span class="sub">材料品番の新規作成・検索・変更、良品マスター画像の撮影登録を行います（現在: <strong id="topMaterialCount">0</strong> 件）</span>
+        <span class="sub">材料品番のCSV一括取込・新規作成・検索・変更、良品マスター画像の撮影登録を行います（現在: <strong id="topMaterialCount">0</strong> 件）</span>
       `;
-      // 作業者ボタンと管理者設定ボタンの間に挿入
       menuGrid.insertBefore(matBtn, menuGrid.children[1] || null);
     }
   }
@@ -226,6 +225,26 @@ function injectMaterialMasterPageAndMenu() {
     matPage.innerHTML = `
       <div class="nav-banner" style="background:var(--ai-light); color:var(--ai-color); border-left-color:var(--ai-color);">
         🥐 パン屋AI 材料マスター登録・編集画面（ここで登録した材料マスターを各製品の検査ステップに紐づけます）
+      </div>
+
+      <!-- ★ 新設：材料マスターCSV一括取込カード ★ -->
+      <div class="card">
+        <div class="card-title" style="color:var(--ai-color); border-left-color:var(--ai-color);">
+          📄 材料マスター（品番・名称メモ）のCSV一括取込 ／ 一覧CSV出力（UTF-8・Shift-JIS自動判別）
+        </div>
+        <p style="font-size:0.82rem; color:var(--muted); margin-bottom:10px;">
+          <strong>A列: 材料品番</strong>（必須） ／ <strong>B列: 材料名・メモ</strong>（任意） ／ <strong>C列: 合格基準%</strong>（任意・省略時は80%）のCSVを読み込み、材料マスターの枠組みを一括登録します。<br>
+          ※すでに良品画像を登録済みの材料品番が含まれている場合、<strong>撮影済みの良品データは消さずに維持</strong>し、名称（メモ）のみを更新します。
+        </p>
+
+        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; background:#f9f5fc; border:1.5px solid #ce93d8; border-radius:8px; padding:10px 12px;">
+          <input type="file" id="fileMaterialCsv" accept=".csv" style="flex:1; min-width:220px;" onchange="handleMaterialCsvSelect(event)">
+          <label style="display:flex; align-items:center; gap:5px; font-size:0.82rem; font-weight:700; cursor:pointer;">
+            <input type="checkbox" id="chkMatCsvSkipHeader" checked> 1行目を見出しとしてスキップ
+          </label>
+          <button type="button" class="btn" style="padding:6px 10px; font-size:0.8rem;" onclick="exportMaterialListCsv()">📤 登録済み材料リストをCSV出力</button>
+          <button type="button" class="btn btn-danger" style="padding:6px 10px; font-size:0.8rem;" onclick="resetAllMaterialMasters()">🗑️ 材料マスター全リセット</button>
+        </div>
       </div>
 
       <div class="card">
@@ -292,14 +311,14 @@ function injectMaterialMasterPageAndMenu() {
 
           <div style="display:flex; flex-direction:column; gap:12px;">
             <div id="materialEditorContainer" style="background:#fdfbfe; border:1.5px solid #ce93d8; border-radius:10px; padding:14px; display:flex; flex-direction:column; gap:12px;">
-              <p style="font-size:0.88rem; color:var(--muted);">上のリストから材料品番を選択するか、新規材料品番を追加してください。</p>
+              <p style="font-size:0.88rem; color:var(--muted);">上のリストから材料品番を選択するか、CSV一括取込・新規追加を行ってください。</p>
             </div>
 
             <div class="card" style="background:#f8fafc; margin-top:auto;">
               <div style="font-size:0.82rem; color:var(--muted); line-height:1.5;">
                 💡 <strong>材料マスターの使いかた:</strong><br>
-                1. ここで材料品番ごとに「良品マスター画像（複数角度・照明条件で3〜5枚推奨）」を撮影・登録します。<br>
-                2. 「⚙️ 検査項目の登録・システム設定」画面を開き、各製品品番のステップで「＋ 🥐 登録済み材料マスターから追加」を選ぶだけで簡単に紐づけできます。
+                1. CSV取込または手動で材料品番の枠組みを作り、必要な材料から順に「良品マスター画像（3〜5枚推奨）」を撮影します。<br>
+                2. 「⚙️ 検査項目の登録・システム設定」画面を開き、各製品品番のステップで材料マスターを選ぶだけで紐づけできます。
               </div>
               <div style="margin-top:10px; display:flex; justify-content:flex-end;">
                 <button type="button" class="btn btn-dark" onclick="navigateTo('adminPage')">⚙️ 製品ごとの設定画面へ移動 ➔</button>
@@ -317,6 +336,161 @@ function injectMaterialMasterPageAndMenu() {
       await updateMaterialMasterDropdowns(true);
     });
   }
+}
+
+// ★ 材料マスターCSV一括取込処理（UTF-8 / Shift-JIS自動判別 ＆ 既存良品データ保護マージ） ★
+function handleMaterialCsvSelect(event) {
+  blurActiveInput();
+  const file = event.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = async (e) => {
+    const buf = e.target.result;
+    let text = '';
+    try {
+      text = new TextDecoder('utf-8', { fatal: true }).decode(buf);
+    } catch (err) {
+      text = new TextDecoder('shift-jis').decode(buf);
+    }
+    await importMaterialMastersFromCsvText(text);
+    event.target.value = ''; // 同じファイル名でも再選択可能にする
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+async function importMaterialMastersFromCsvText(text) {
+  const lines = text.split(/\r\n|\n|\r/);
+  const skipHeader = document.getElementById('chkMatCsvSkipHeader')?.checked ?? true;
+  const startIdx = skipHeader ? 1 : 0;
+
+  if (lines.length <= startIdx) {
+    return alert('CSVに読み込むデータ行がありません。');
+  }
+
+  const materials = (await idbGet(MATERIAL_MASTER_KEY)) || {};
+  let addedCount = 0;
+  let updatedCount = 0;
+  let firstImportedCode = '';
+
+  for (let i = startIdx; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+
+    const cols = (typeof parseCsvLine === 'function') ? parseCsvLine(line) : line.split(',');
+    const matCode = normalizeCodeString(cols[0] || '');
+    if (!matCode) continue;
+
+    const matMemo = String(cols[1] || '').normalize('NFKC').trim();
+    const rawTh = parseInt(cols[2], 10);
+    const matTh = (!isNaN(rawTh) && rawTh >= 50 && rawTh <= 99) ? rawTh : null;
+
+    if (!firstImportedCode) firstImportedCode = matCode;
+
+    if (materials[matCode]) {
+      // 既存の材料マスターがある場合は、撮影済みの良品データや枠座標を維持したままメモ・閾値のみ更新
+      if (matMemo) materials[matCode].memo = matMemo;
+      if (matTh !== null) materials[matCode].bakeryThreshold = matTh;
+      materials[matCode].updatedAt = new Date().toLocaleString('ja-JP');
+      updatedCount++;
+    } else {
+      // 新規材料マスターの枠組みを作成
+      materials[matCode] = {
+        code: matCode,
+        memo: matMemo,
+        isFullFrame: true,
+        x: 0, y: 0, w: 640, h: 480,
+        baseW: 640, baseH: 480,
+        bakerySamples: [],
+        bakeryThreshold: matTh !== null ? matTh : 80,
+        updatedAt: new Date().toLocaleString('ja-JP')
+      };
+      addedCount++;
+    }
+  }
+
+  if (addedCount === 0 && updatedCount === 0) {
+    return alert('有効な材料品番データが見つかりませんでした。A列に材料品番が入力されているか確認してください。');
+  }
+
+  await idbSet(MATERIAL_MASTER_KEY, materials);
+  window.materialMastersCache = materials;
+  await clearMaterialSearch();
+
+  if (firstImportedCode && materials[firstImportedCode]) {
+    await loadMaterialMaster(firstImportedCode);
+  }
+
+  playBuzzerPattern('OK');
+  alert(
+    `📄 材料マスターCSVの取込が完了しました！\n\n` +
+    `・新規追加: ${addedCount} 件\n` +
+    `・既存更新(良品データ保持): ${updatedCount} 件\n` +
+    `・現在の材料マスター総数: ${Object.keys(materials).length} 件`
+  );
+}
+
+// 登録されている材料マスター一覧をCSVとして書き出す（棚卸し・Excel編集用）
+async function exportMaterialListCsv() {
+  blurActiveInput();
+  const materials = (await idbGet(MATERIAL_MASTER_KEY)) || {};
+  const keys = Object.keys(materials).sort();
+  if (keys.length === 0) return alert('登録されている材料マスターがありません。');
+
+  let csv = '材料品番,材料名・メモ,合格一致率(%),登録済み良品枚数,最終更新日時\r\n';
+  keys.forEach(k => {
+    const m = materials[k];
+    const safeCode = `"${String(k).replace(/"/g, '""')}"`;
+    const safeMemo = `"${String(m.memo || '').replace(/"/g, '""')}"`;
+    const th = m.bakeryThreshold || 80;
+    const cnt = (m.bakerySamples || []).length;
+    const dt = `"${String(m.updatedAt || '').replace(/"/g, '""')}"`;
+    csv += `${safeCode},${safeMemo},${th},${cnt},${dt}\r\n`;
+  });
+
+  const blob = new Blob([new Uint8Array([0xEF, 0xBB, 0xBF]), csv], { type: 'text/csv;charset=utf-8;' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `Material_Masters_${Date.now()}.csv`;
+  a.click();
+}
+
+// 材料マスターの一括リセット（良品登録済みの材料を残すか選択可能）
+async function resetAllMaterialMasters() {
+  blurActiveInput();
+  const materials = (await idbGet(MATERIAL_MASTER_KEY)) || {};
+  const total = Object.keys(materials).length;
+  if (total === 0) return alert('削除する材料マスターがありません。');
+
+  if (!confirm(`現在登録されている材料マスター（${total}件）をリセットしますか？`)) return;
+
+  const keepTrained = confirm(
+    'すでにカメラで「良品マスター画像（1枚以上）」を撮影済みの材料は残しますか？\n\n' +
+    '・[OK] ＝ 良品撮影済みの材料は残し、未撮影（0枚）の枠組みのみ消去\n' +
+    '・[キャンセル] ＝ すべての材料マスターを完全に初期化'
+  );
+
+  if (keepTrained) {
+    Object.keys(materials).forEach(k => {
+      if (!materials[k].bakerySamples || materials[k].bakerySamples.length === 0) {
+        delete materials[k];
+      }
+    });
+    await idbSet(MATERIAL_MASTER_KEY, materials);
+    window.materialMastersCache = materials;
+  } else {
+    await idbDelete(MATERIAL_MASTER_KEY);
+    window.materialMastersCache = {};
+  }
+
+  window.activeMaterialCode = '';
+  const fileInp = document.getElementById('fileMaterialCsv');
+  if (fileInp) fileInp.value = '';
+
+  await updateMaterialMasterDropdowns(false);
+  renderMaterialEditorPanel();
+  drawMaterialCanvas();
+  alert('材料マスターのリセットが完了しました。');
 }
 
 async function clearMaterialSearch() {
@@ -460,7 +634,6 @@ async function renameCurrentMaterialMaster() {
     materials[newCode] = matData;
     delete materials[oldCode];
 
-    // 製品プロファイル側で oldCode を参照しているステップも自動的に newCode へ更新
     const profiles = (await idbGet(STORAGE_KEY)) || {};
     let linkedUpdated = 0;
     Object.keys(profiles).forEach(pKey => {
@@ -508,7 +681,7 @@ function renderMaterialEditorPanel() {
   const mat = window.materialMastersCache[window.activeMaterialCode];
   if (!window.activeMaterialCode || !mat) {
     if (renameBar) renameBar.style.display = 'none';
-    container.innerHTML = '<p style="font-size:0.88rem; color:var(--muted);">上の検索欄・プルダウンから材料品番を選択するか、新規材料品番を入力して「＋ 新規材料を追加」を押してください。</p>';
+    container.innerHTML = '<p style="font-size:0.88rem; color:var(--muted);">上の検索欄・プルダウンから材料品番を選択するか、CSV一括取込・新規追加を行ってください。</p>';
     return;
   }
 
@@ -955,7 +1128,6 @@ function renderAdminStepsList() {
       ? `<span style="font-size:0.72rem; background:var(--primary-light); color:var(--primary-dark); padding:2px 6px; border-radius:4px; font-weight:700;">CSV連携${s.refName ? ` (${s.refName})` : ''}</span>`
       : `<span style="font-size:0.72rem; background:var(--ai-light); color:var(--ai-color); padding:2px 6px; border-radius:4px; font-weight:700;">${s.type === 'BAKERY' ? '材料マスター照合' : '追加ステップ'}</span>`;
 
-    // 材料マスター選択肢の構築
     const linkedMat = s.materialCode ? materials[s.materialCode] : null;
     const matSampleCnt = linkedMat ? (linkedMat.bakerySamples || []).length : (s.bakerySamples || []).length;
     const matOptions = `<option value="">-- 材料マスターを選択 (${matKeys.length}件) --</option>` +
@@ -1021,7 +1193,6 @@ function renderAdminStepsList() {
   }).join('');
 }
 
-// ステップ内の材料マスタープルダウンをキーワードで絞り込む
 function filterStepMaterialSelect(stepIdx, query) {
   const sel = document.getElementById(`selStepMat_${stepIdx}`);
   if (!sel) return;
@@ -1042,14 +1213,12 @@ function filterStepMaterialSelect(stepIdx, query) {
     }).join('');
 }
 
-// 選択した材料マスターを製品の検査ステップに紐づける
 async function assignMaterialMasterToStep(stepIdx, matCode) {
   const step = window.adminStepsData[stepIdx];
   if (!step) return;
   step.materialCode = matCode || '';
   const mat = window.materialMastersCache[matCode];
   if (mat) {
-    // 工程名が初期値のままなら材料品番（またはメモ）を自動でセット
     if (!step.name || step.name.startsWith('ワーク外観') || step.name.startsWith('材料照合')) {
       step.name = mat.memo ? `${matCode} (${mat.memo})` : matCode;
     }
