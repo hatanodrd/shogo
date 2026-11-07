@@ -1,10 +1,11 @@
 // =========================================================
-// config_audio.js : 定数・IndexedDB・文字同一視設定・作業者QR登録・音声制御
+// config_audio.js : 定数・IndexedDB・材料マスターキー・文字同一視・作業者QR・音声制御
 // =========================================================
 const DB_NAME = 'pokayoke_idb_v1';
 const DB_STORE = 'app_data';
 
 const STORAGE_KEY = 'pokayoke_step_profiles_v5';
+const MATERIAL_MASTER_KEY = 'pokayoke_material_masters_v5';
 const TABLE_A_KEY = 'pokayoke_csv_table_a_v5';
 const TABLE_B_KEY = 'pokayoke_csv_table_b_v5';
 const QR_CONFIG_KEY = 'pokayoke_qr_range_config_v5';
@@ -97,7 +98,7 @@ async function idbGet(key) {
     const req = store.get(key);
     req.onsuccess = () => {
       let res = req.result !== undefined ? req.result : null;
-      if (key === STORAGE_KEY && res && typeof res === 'object' && isIgnoreCase) {
+      if ((key === STORAGE_KEY || key === MATERIAL_MASTER_KEY) && res && typeof res === 'object' && isIgnoreCase) {
         const clone = Object.assign({}, res);
         Object.keys(res).forEach(k => {
           const upKey = String(k).normalize('NFKC').trim().toUpperCase();
@@ -148,7 +149,6 @@ function normalizeCodeString(str) {
   return isIgnoreCase ? cleaned.toUpperCase() : cleaned;
 }
 
-// 比較用に O/0 および 1/I/l を統一したキーを返す
 function unifyAmbiguousCharsKey(str) {
   let s = normalizeCodeString(str);
   if (isIgnoreOandZero) {
@@ -160,15 +160,12 @@ function unifyAmbiguousCharsKey(str) {
   return s;
 }
 
-// 読み取った文字列から登録済みマスタ品番を検索（O/0・1/I同一視ON時は自動で正式品番名を返す）
 function findMatchingMasterPart(rawPartNo, storedProfiles) {
   const cleaned = normalizeCodeString(rawPartNo);
   if (!cleaned || !storedProfiles) return null;
 
-  // 1. 完全一致すればそれを返す
   if (storedProfiles[cleaned]) return cleaned;
 
-  // 2. O/0 または 1/I の同一視がONの場合、統一キーでマスタ側と突合する
   if (isIgnoreOandZero || isIgnoreOneAndI) {
     const targetUnified = unifyAmbiguousCharsKey(cleaned);
     const keys = Object.keys(storedProfiles);
@@ -228,9 +225,7 @@ function registerWorker() {
   setWorkerRegisteredValue(val);
 }
 
-// ステータスバーへの「📷 QRで作業者登録」ボタン追加と専用モーダル生成
 function injectWorkerModalUI() {
-  // 1. ステータスバーにQR登録ボタンを追加
   const workerInp = document.getElementById('txtWorkerInput');
   if (workerInp && !document.getElementById('btnOpenWorkerQr')) {
     const qrBtn = document.createElement('button');
@@ -243,7 +238,6 @@ function injectWorkerModalUI() {
     workerInp.parentNode.appendChild(qrBtn);
   }
 
-  // 2. 作業者登録モーダル（QRリーダー内蔵）をbody末尾に追加
   if (!document.getElementById('workerAuthModal')) {
     const modal = document.createElement('div');
     modal.id = 'workerAuthModal';
@@ -368,7 +362,7 @@ async function stopWorkerQrCamera() {
 }
 
 // =========================================================
-// ⚙️ 管理画面への拡張設定UI（大文字小文字 ／ Oと0 ／ 1とI ／ OCR初期値）自動挿入
+// ⚙️ 管理画面への拡張設定UI自動挿入
 // =========================================================
 function injectCustomAdminSettingsUI() {
   const numQrStart = document.getElementById('numQrStart');
@@ -381,7 +375,6 @@ function injectCustomAdminSettingsUI() {
     titleEl.textContent = '③ システム共通・読取ルール設定（QR桁数 ／ 大文字・小文字 ／ Oと0・1とI区別 ／ OCR初期値）';
   }
 
-  // 1. 大文字・小文字無視トグル行
   if (!document.getElementById('ignoreCaseSettingRow')) {
     const caseRow = document.createElement('div');
     caseRow.id = 'ignoreCaseSettingRow';
@@ -396,7 +389,6 @@ function injectCustomAdminSettingsUI() {
     card.appendChild(caseRow);
   }
 
-  // 2. OCRの「O（オー）」と「0（ゼロ）」同一視トグル行
   if (!document.getElementById('ignoreOZeroSettingRow')) {
     const ozeroRow = document.createElement('div');
     ozeroRow.id = 'ignoreOZeroSettingRow';
@@ -411,7 +403,6 @@ function injectCustomAdminSettingsUI() {
     card.appendChild(ozeroRow);
   }
 
-  // 3. OCRの「1（イチ）」と「I（アイ）/ l（エル）」同一視トグル行
   if (!document.getElementById('ignoreOneISettingRow')) {
     const oneIRow = document.createElement('div');
     oneIRow.id = 'ignoreOneISettingRow';
@@ -426,7 +417,6 @@ function injectCustomAdminSettingsUI() {
     card.appendChild(oneIRow);
   }
 
-  // 4. OCR初期値（枠幅・枠高・影除去感度）設定ブロック
   if (!document.getElementById('ocrDefaultSettingRow')) {
     const ocrRow = document.createElement('div');
     ocrRow.id = 'ocrDefaultSettingRow';
