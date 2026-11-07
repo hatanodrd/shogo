@@ -1,5 +1,5 @@
 // =========================================================
-// config_audio.js : 定数・IndexedDB・大文字小文字・O/0同一視・OCR初期値・音声制御
+// config_audio.js : 定数・IndexedDB・文字同一視設定・作業者QR登録・音声制御
 // =========================================================
 const DB_NAME = 'pokayoke_idb_v1';
 const DB_STORE = 'app_data';
@@ -10,6 +10,7 @@ const TABLE_B_KEY = 'pokayoke_csv_table_b_v5';
 const QR_CONFIG_KEY = 'pokayoke_qr_range_config_v5';
 const CASE_CONFIG_KEY = 'pokayoke_ignore_case_v5';
 const OZERO_CONFIG_KEY = 'pokayoke_ignore_ozero_v5';
+const ONE_I_CONFIG_KEY = 'pokayoke_ignore_one_i_v5';
 const OCR_CONFIG_KEY = 'pokayoke_ocr_default_config_v5';
 const AUDIO_CONFIG_KEY = 'pokayoke_audio_config_v5';
 const LOG_STORAGE_KEY = 'pokayoke_inspection_logs_v5';
@@ -24,6 +25,9 @@ let isIgnoreCase = true;
 
 // OCRで「O（オー）」と「0（ゼロ）」を同一視するかどうかの設定（初期値: true = 区別しない）
 let isIgnoreOandZero = true;
+
+// OCRで「1（イチ）」と「I（アイ）/ l（エル）」を同一視するかどうかの設定（初期値: true = 区別しない）
+let isIgnoreOneAndI = true;
 
 // OCR初期値設定（横幅・高さ・影除去感度）
 let ocrDefaultConfig = {
@@ -62,6 +66,11 @@ const reusableCropCtx = reusableCropCanvas.getContext('2d', { willReadFrequently
 let activePage = 'topMenuPage';
 let camStream = null;
 let isCamRunning = false;
+
+// 作業者QRスキャナ制御用
+let workerQrScanner = null;
+let isWorkerQrLocked = false;
+let pendingNavigatePageAfterWorker = null;
 
 // =========================================================
 // 🗄️ IndexedDB 非同期ラッパー（容量無制限ストレージ）
@@ -131,7 +140,7 @@ function blurActiveInput() {
 }
 
 // =========================================================
-// 🔤 文字列正規化 ＆ O(オー)/0(ゼロ) あいまい一致解決
+// 🔤 文字列正規化 ＆ O/0 および 1/I あいまい一致解決
 // =========================================================
 function normalizeCodeString(str) {
   if (!str) return '';
@@ -139,27 +148,33 @@ function normalizeCodeString(str) {
   return isIgnoreCase ? cleaned.toUpperCase() : cleaned;
 }
 
-// 比較用に O / o / 0 をすべて '0' に統一したキーを返す
-function unifyOandZeroKey(str) {
-  const norm = normalizeCodeString(str);
-  return isIgnoreOandZero ? norm.replace(/[Oo0]/g, '0') : norm;
+// 比較用に O/0 および 1/I/l を統一したキーを返す
+function unifyAmbiguousCharsKey(str) {
+  let s = normalizeCodeString(str);
+  if (isIgnoreOandZero) {
+    s = s.replace(/[Oo0]/g, '0');
+  }
+  if (isIgnoreOneAndI) {
+    s = s.replace(/[1Iil|]/g, '1');
+  }
+  return s;
 }
 
-// 読み取った文字列から登録済みマスタ品番を検索（Oと0の同一視ON時は自動で正式品番名を返す）
+// 読み取った文字列から登録済みマスタ品番を検索（O/0・1/I同一視ON時は自動で正式品番名を返す）
 function findMatchingMasterPart(rawPartNo, storedProfiles) {
   const cleaned = normalizeCodeString(rawPartNo);
   if (!cleaned || !storedProfiles) return null;
 
-  // 1. そのまま完全一致すればそれを返す
+  // 1. 完全一致すればそれを返す
   if (storedProfiles[cleaned]) return cleaned;
 
-  // 2. Oと0の同一視がONの場合、Oと0を統一してマスタ側と突合する
-  if (isIgnoreOandZero) {
-    const targetUnified = unifyOandZeroKey(cleaned);
+  // 2. O/0 または 1/I の同一視がONの場合、統一キーでマスタ側と突合する
+  if (isIgnoreOandZero || isIgnoreOneAndI) {
+    const targetUnified = unifyAmbiguousCharsKey(cleaned);
     const keys = Object.keys(storedProfiles);
     for (let i = 0; i < keys.length; i++) {
       const k = keys[i];
-      if (unifyOandZeroKey(k) === targetUnified) {
+      if (unifyAmbiguousCharsKey(k) === targetUnified) {
         return k;
       }
     }
@@ -168,7 +183,192 @@ function findMatchingMasterPart(rawPartNo, storedProfiles) {
 }
 
 // =========================================================
-// ⚙️ 管理画面への拡張設定UI（大文字小文字 ／ Oと0同一視 ／ OCR初期値）自動挿入
+// 👤 作業者ID管理（トップ画面復帰時リセット ＆ QRコード読取モーダル）
+// =========================================================
+function isWorkerRegistered() {
+  const lbl = document.getElementById('lblWorker');
+  if (!lbl) return false;
+  const txt = lbl.textContent.trim();
+  return txt !== '' && txt !== '未登録';
+}
+
+function clearWorkerRegistration() {
+  const lbl = document.getElementById('lblWorker');
+  if (lbl) {
+    lbl.textContent = '未登録';
+    lbl.style.color = 'var(--danger)';
+  }
+  const inp = document.getElementById('txtWorkerInput');
+  if (inp) inp.value = '';
+}
+
+function setWorkerRegisteredValue(val) {
+  const cleaned = String(val || '').normalize('NFKC').trim();
+  if (!cleaned) return false;
+  const lbl = document.getElementById('lblWorker');
+  if (lbl) {
+    lbl.textContent = cleaned;
+    lbl.style.color = 'var(--success)';
+  }
+  const inp = document.getElementById('txtWorkerInput');
+  if (inp) inp.value = '';
+  const modalInp = document.getElementById('txtModalWorkerInput');
+  if (modalInp) modalInp.value = '';
+  playBuzzerPattern('OK');
+  return true;
+}
+
+function registerWorker() {
+  blurActiveInput();
+  const val = document.getElementById('txtWorkerInput')?.value.trim();
+  if (!val) {
+    openWorkerQrModal(false);
+    return;
+  }
+  setWorkerRegisteredValue(val);
+}
+
+// ステータスバーへの「📷 QRで作業者登録」ボタン追加と専用モーダル生成
+function injectWorkerModalUI() {
+  // 1. ステータスバーにQR登録ボタンを追加
+  const workerInp = document.getElementById('txtWorkerInput');
+  if (workerInp && !document.getElementById('btnOpenWorkerQr')) {
+    const qrBtn = document.createElement('button');
+    qrBtn.id = 'btnOpenWorkerQr';
+    qrBtn.type = 'button';
+    qrBtn.className = 'btn btn-dark';
+    qrBtn.style.cssText = 'padding:4px 8px; font-size:0.78rem;';
+    qrBtn.textContent = '📷 QR読取';
+    qrBtn.onclick = () => openWorkerQrModal(false);
+    workerInp.parentNode.appendChild(qrBtn);
+  }
+
+  // 2. 作業者登録モーダル（QRリーダー内蔵）をbody末尾に追加
+  if (!document.getElementById('workerAuthModal')) {
+    const modal = document.createElement('div');
+    modal.id = 'workerAuthModal';
+    modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.72); z-index:1100; display:none; align-items:center; justify-content:center; padding:16px;';
+    modal.innerHTML = `
+      <div class="card" style="max-width:480px; width:100%; display:flex; flex-direction:column; gap:12px; border:2px solid var(--primary);">
+        <div class="card-title" style="margin-bottom:0;">👤 作業者ID（担当者コード）の登録</div>
+        <p id="workerModalNotice" style="font-size:0.85rem; color:var(--danger); font-weight:700;">
+          ⚠️ 検査を開始するには、先に作業者IDを登録してください。
+        </p>
+
+        <div style="display:flex; gap:8px;">
+          <input type="text" id="txtModalWorkerInput" placeholder="作業者IDを手入力 または 外付けリーダーで読取" style="flex:1;" autocomplete="off">
+          <button type="button" class="btn btn-primary" onclick="submitModalWorkerInput()">登録して進む</button>
+        </div>
+
+        <div style="display:flex; gap:8px;">
+          <button type="button" class="btn btn-success" id="btnStartWorkerQrCam" style="flex:1;" onclick="startWorkerQrCamera()">📷 カメラで作業者QR / バーコードを読取</button>
+          <button type="button" class="btn btn-danger" id="btnStopWorkerQrCam" style="display:none;" onclick="stopWorkerQrCamera()">⏹ カメラ停止</button>
+        </div>
+
+        <div id="workerQrCamBox" style="display:none; width:100%; max-width:380px; margin:0 auto; aspect-ratio:4/3; background:#000; border-radius:8px; overflow:hidden;">
+          <div id="workerQrReader" style="width:100%; height:100%;"></div>
+        </div>
+
+        <div style="display:flex; justify-content:flex-end; margin-top:4px;">
+          <button type="button" class="btn" onclick="closeWorkerQrModal()">閉じる</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+
+    const modalInp = document.getElementById('txtModalWorkerInput');
+    modalInp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        submitModalWorkerInput();
+      }
+    });
+  }
+}
+
+async function openWorkerQrModal(autoStartCam = true, nextTargetPage = null) {
+  blurActiveInput();
+  injectWorkerModalUI();
+  pendingNavigatePageAfterWorker = nextTargetPage;
+  const notice = document.getElementById('workerModalNotice');
+  if (notice) {
+    notice.style.display = nextTargetPage ? 'block' : 'none';
+  }
+  document.getElementById('workerAuthModal').style.display = 'flex';
+  if (autoStartCam) {
+    await startWorkerQrCamera();
+  }
+}
+
+async function closeWorkerQrModal() {
+  await stopWorkerQrCamera();
+  const modal = document.getElementById('workerAuthModal');
+  if (modal) modal.style.display = 'none';
+  pendingNavigatePageAfterWorker = null;
+}
+
+async function submitModalWorkerInput() {
+  blurActiveInput();
+  const val = document.getElementById('txtModalWorkerInput')?.value.trim();
+  if (!val) return alert('作業者IDを入力するか、QRコードを読み取ってください');
+  await completeWorkerModalRegistration(val);
+}
+
+async function completeWorkerModalRegistration(workerCode) {
+  const next = pendingNavigatePageAfterWorker;
+  await closeWorkerQrModal();
+  if (setWorkerRegisteredValue(workerCode)) {
+    speakText('作業者を登録しました');
+    if (next && typeof navigateTo === 'function') {
+      await navigateTo(next);
+    }
+  }
+}
+
+async function startWorkerQrCamera() {
+  blurActiveInput();
+  await stopWorkerQrCamera();
+  isWorkerQrLocked = false;
+
+  const box = document.getElementById('workerQrCamBox');
+  const stopBtn = document.getElementById('btnStopWorkerQrCam');
+  if (box) box.style.display = 'block';
+  if (stopBtn) stopBtn.style.display = 'inline-flex';
+
+  workerQrScanner = new Html5Qrcode('workerQrReader');
+  workerQrScanner.start(
+    { facingMode: 'environment' },
+    { fps: 15, qrbox: { width: 220, height: 150 } },
+    (decodedText) => {
+      if (isWorkerQrLocked) return;
+      const cleaned = String(decodedText || '').normalize('NFKC').trim();
+      if (!cleaned) return;
+      isWorkerQrLocked = true;
+      completeWorkerModalRegistration(cleaned);
+    },
+    () => {}
+  ).catch(err => {
+    alert('作業者QR読取カメラの起動に失敗しました: ' + err);
+    stopWorkerQrCamera();
+  });
+}
+
+async function stopWorkerQrCamera() {
+  if (workerQrScanner) {
+    try {
+      if (workerQrScanner.isScanning) await workerQrScanner.stop();
+      await workerQrScanner.clear();
+    } catch (e) {}
+    workerQrScanner = null;
+  }
+  const box = document.getElementById('workerQrCamBox');
+  const stopBtn = document.getElementById('btnStopWorkerQrCam');
+  if (box) box.style.display = 'none';
+  if (stopBtn) stopBtn.style.display = 'none';
+}
+
+// =========================================================
+// ⚙️ 管理画面への拡張設定UI（大文字小文字 ／ Oと0 ／ 1とI ／ OCR初期値）自動挿入
 // =========================================================
 function injectCustomAdminSettingsUI() {
   const numQrStart = document.getElementById('numQrStart');
@@ -178,7 +378,7 @@ function injectCustomAdminSettingsUI() {
 
   const titleEl = card.querySelector('.card-title');
   if (titleEl) {
-    titleEl.textContent = '③ システム共通・読取ルール設定（QR桁数 ／ 大文字・小文字 ／ Oと0区別 ／ OCR初期値）';
+    titleEl.textContent = '③ システム共通・読取ルール設定（QR桁数 ／ 大文字・小文字 ／ Oと0・1とI区別 ／ OCR初期値）';
   }
 
   // 1. 大文字・小文字無視トグル行
@@ -191,7 +391,7 @@ function injectCustomAdminSettingsUI() {
         <strong style="font-size:0.9rem; color:var(--primary-dark);">🔤 アルファベットの大文字・小文字の判定</strong>
         <div style="font-size:0.78rem; color:var(--muted);">ONにすると、バーコードや品番の「abc」と「ABC」を同じ文字として合格判定します</div>
       </div>
-      <button type="button" class="btn" id="btnToggleIgnoreCase" onclick="toggleIgnoreCaseSetting()" style="min-width: 250px;"></button>
+      <button type="button" class="btn" id="btnToggleIgnoreCase" onclick="toggleIgnoreCaseSetting()" style="min-width: 260px;"></button>
     `;
     card.appendChild(caseRow);
   }
@@ -206,12 +406,27 @@ function injectCustomAdminSettingsUI() {
         <strong style="font-size:0.9rem; color:var(--primary-dark);">🔄 OCR読取時の「O（オー）」と「0（ゼロ）」の区別</strong>
         <div style="font-size:0.78rem; color:var(--muted);">ONにすると、OCRで英字の「O」と数字の「0」が入れ替わって認識されても同じ品番として判定します</div>
       </div>
-      <button type="button" class="btn" id="btnToggleIgnoreOZero" onclick="toggleIgnoreOZeroSetting()" style="min-width: 250px;"></button>
+      <button type="button" class="btn" id="btnToggleIgnoreOZero" onclick="toggleIgnoreOZeroSetting()" style="min-width: 260px;"></button>
     `;
     card.appendChild(ozeroRow);
   }
 
-  // 3. OCR初期値（枠幅・枠高・影除去感度）設定ブロック
+  // 3. OCRの「1（イチ）」と「I（アイ）/ l（エル）」同一視トグル行
+  if (!document.getElementById('ignoreOneISettingRow')) {
+    const oneIRow = document.createElement('div');
+    oneIRow.id = 'ignoreOneISettingRow';
+    oneIRow.style.cssText = 'margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;';
+    oneIRow.innerHTML = `
+      <div>
+        <strong style="font-size:0.9rem; color:var(--primary-dark);">🔄 OCR読取時の「1（数字）」と「I（アイ）/ l（エル）」の区別</strong>
+        <div style="font-size:0.78rem; color:var(--muted);">ONにすると、OCRで数字の「1」と英字の「I」「l」が入れ替わって認識されても同じ品番として判定します</div>
+      </div>
+      <button type="button" class="btn" id="btnToggleIgnoreOneI" onclick="toggleIgnoreOneISetting()" style="min-width: 260px;"></button>
+    `;
+    card.appendChild(oneIRow);
+  }
+
+  // 4. OCR初期値（枠幅・枠高・影除去感度）設定ブロック
   if (!document.getElementById('ocrDefaultSettingRow')) {
     const ocrRow = document.createElement('div');
     ocrRow.id = 'ocrDefaultSettingRow';
@@ -248,6 +463,7 @@ function injectCustomAdminSettingsUI() {
 
   updateIgnoreCaseUI();
   updateIgnoreOZeroUI();
+  updateIgnoreOneIUI();
   applyOcrDefaultToUI();
 }
 
@@ -289,6 +505,26 @@ function toggleIgnoreOZeroSetting() {
   localStorage.setItem(OZERO_CONFIG_KEY, JSON.stringify(isIgnoreOandZero));
   saveAudioSettings();
   updateIgnoreOZeroUI();
+}
+
+function updateIgnoreOneIUI() {
+  const btn = document.getElementById('btnToggleIgnoreOneI');
+  if (!btn) return;
+  if (isIgnoreOneAndI) {
+    btn.className = 'btn btn-success';
+    btn.textContent = '✅ 1(数字)とI(アイ)を無視: ON (同一視)';
+  } else {
+    btn.className = 'btn btn-dark';
+    btn.textContent = '❌ 1(数字)とI(アイ)を無視: OFF (厳密に区別)';
+  }
+}
+
+function toggleIgnoreOneISetting() {
+  blurActiveInput();
+  isIgnoreOneAndI = !isIgnoreOneAndI;
+  localStorage.setItem(ONE_I_CONFIG_KEY, JSON.stringify(isIgnoreOneAndI));
+  saveAudioSettings();
+  updateIgnoreOneIUI();
 }
 
 function applyOcrDefaultToUI() {
@@ -360,38 +596,30 @@ async function loadSavedConfigs() {
     if (qrRangeConfig.end) document.getElementById('numQrEnd').value = qrRangeConfig.end;
 
     const savedCase = localStorage.getItem(CASE_CONFIG_KEY);
-    if (savedCase !== null) {
-      isIgnoreCase = JSON.parse(savedCase);
-    }
+    if (savedCase !== null) isIgnoreCase = JSON.parse(savedCase);
 
     const savedOZero = localStorage.getItem(OZERO_CONFIG_KEY);
-    if (savedOZero !== null) {
-      isIgnoreOandZero = JSON.parse(savedOZero);
-    }
+    if (savedOZero !== null) isIgnoreOandZero = JSON.parse(savedOZero);
+
+    const savedOneI = localStorage.getItem(ONE_I_CONFIG_KEY);
+    if (savedOneI !== null) isIgnoreOneAndI = JSON.parse(savedOneI);
 
     const savedOcr = JSON.parse(localStorage.getItem(OCR_CONFIG_KEY) || 'null');
-    if (savedOcr) {
-      ocrDefaultConfig = Object.assign(ocrDefaultConfig, savedOcr);
-    }
+    if (savedOcr) ocrDefaultConfig = Object.assign(ocrDefaultConfig, savedOcr);
 
     const savedAudio = JSON.parse(localStorage.getItem(AUDIO_CONFIG_KEY) || 'null');
-    if (savedAudio) {
-      audioConfig = Object.assign(audioConfig, savedAudio);
-    }
-    if (audioConfig.ignoreCase !== undefined && savedCase === null) {
-      isIgnoreCase = audioConfig.ignoreCase;
-    }
-    if (audioConfig.ignoreOandZero !== undefined && savedOZero === null) {
-      isIgnoreOandZero = audioConfig.ignoreOandZero;
-    }
-    if (audioConfig.ocrDefaultConfig && !savedOcr) {
-      ocrDefaultConfig = Object.assign(ocrDefaultConfig, audioConfig.ocrDefaultConfig);
-    }
+    if (savedAudio) audioConfig = Object.assign(audioConfig, savedAudio);
+
+    if (audioConfig.ignoreCase !== undefined && savedCase === null) isIgnoreCase = audioConfig.ignoreCase;
+    if (audioConfig.ignoreOandZero !== undefined && savedOZero === null) isIgnoreOandZero = audioConfig.ignoreOandZero;
+    if (audioConfig.ignoreOneAndI !== undefined && savedOneI === null) isIgnoreOneAndI = audioConfig.ignoreOneAndI;
+    if (audioConfig.ocrDefaultConfig && !savedOcr) ocrDefaultConfig = Object.assign(ocrDefaultConfig, audioConfig.ocrDefaultConfig);
 
     applyAudioConfigToUI();
   } catch (e) {
     console.error('Config load failed:', e);
   }
+  injectWorkerModalUI();
   injectCustomAdminSettingsUI();
   hookPartOcrScannerStart();
   initSpeechVoices();
@@ -444,6 +672,11 @@ function applyAudioConfigToUI() {
     localStorage.setItem(OZERO_CONFIG_KEY, JSON.stringify(isIgnoreOandZero));
     updateIgnoreOZeroUI();
   }
+  if (audioConfig.ignoreOneAndI !== undefined) {
+    isIgnoreOneAndI = audioConfig.ignoreOneAndI;
+    localStorage.setItem(ONE_I_CONFIG_KEY, JSON.stringify(isIgnoreOneAndI));
+    updateIgnoreOneIUI();
+  }
 }
 
 function onAudioSliderChange() {
@@ -465,6 +698,7 @@ function saveAudioSettings() {
   audioConfig.ocrDefaultConfig = ocrDefaultConfig;
   audioConfig.ignoreCase = isIgnoreCase;
   audioConfig.ignoreOandZero = isIgnoreOandZero;
+  audioConfig.ignoreOneAndI = isIgnoreOneAndI;
   localStorage.setItem(AUDIO_CONFIG_KEY, JSON.stringify(audioConfig));
 }
 
@@ -600,16 +834,6 @@ function triggerBorderFlash(type) {
   const el = document.getElementById('borderFlash');
   el.className = type === 'OK' ? 'flash-ok' : 'flash-ng';
   setTimeout(() => { el.className = ''; }, 450);
-}
-
-function registerWorker() {
-  blurActiveInput();
-  const val = document.getElementById('txtWorkerInput').value.trim();
-  if (!val) return;
-  const lbl = document.getElementById('lblWorker');
-  lbl.textContent = val;
-  lbl.style.color = 'var(--success)';
-  document.getElementById('txtWorkerInput').value = '';
 }
 
 function updateCounterUI() {
