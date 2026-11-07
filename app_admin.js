@@ -1,5 +1,5 @@
 // =========================================================
-// app_admin.js : 画面遷移・管理画面ステップ編成・IndexedDB連携
+// app_admin.js : 画面遷移・作業者ID必須ガード・品番検索・管理画面編成
 // =========================================================
 window.adminActivePart = '';
 window.adminStepsData = [];
@@ -10,6 +10,9 @@ let dragStartX = 0, dragStartY = 0;
 let headlessScannerBuffer = '';
 let headlessScannerLastTime = 0;
 
+// 設定画面の品番検索キーワード
+let adminPartSearchQuery = '';
+
 const video = document.getElementById('videoSource');
 const mainCanvas = document.getElementById('mainCanvas');
 const mainCtx = mainCanvas.getContext('2d', { willReadFrequently: true });
@@ -18,6 +21,7 @@ const adminCtx = adminCanvas.getContext('2d', { willReadFrequently: true });
 
 window.addEventListener('DOMContentLoaded', async () => {
   await loadSavedConfigs();
+  injectAdminPartSearchUI();
   setupCanvasTouchAndMouse();
   setupKeyboardShortcuts();
   await updateProfileDropdowns();
@@ -28,8 +32,26 @@ async function navigateTo(pageId) {
   blurActiveInput();
   headlessScannerBuffer = '';
 
+  // ★ 1. 検査画面（品番読取 / ステップ検査）へ入る際、作業者IDが未登録なら登録モーダルを強制表示 ★
+  if ((pageId === 'partScanPage' || pageId === 'inspectPage') && typeof isWorkerRegistered === 'function') {
+    if (!isWorkerRegistered()) {
+      playBuzzerPattern('NG');
+      speakText('先に作業者IDを登録してください');
+      await openWorkerQrModal(true, pageId);
+      return;
+    }
+  }
+
   await stopPartScanCameras();
+  if (typeof stopWorkerQrCamera === 'function') {
+    await stopWorkerQrCamera();
+  }
   stopMainCamera();
+
+  // ★ 2. トップ画面へ戻った場合、作業者IDを「未登録」にリセットする ★
+  if (pageId === 'topMenuPage' && typeof clearWorkerRegistration === 'function') {
+    clearWorkerRegistration();
+  }
 
   document.querySelectorAll('.page-view').forEach(p => p.classList.remove('active'));
   document.getElementById(pageId).classList.add('active');
@@ -147,13 +169,52 @@ function drawAdminCanvas() {
 }
 
 // =========================================================
-// 管理者用：品番・ステップ編集 (IndexedDB対応)
+// 🔎 管理者用：品番検索（部分一致フィルタ）＆ ステップ編集
 // =========================================================
-async function updateProfileDropdowns() {
-  const stored = (await idbGet(STORAGE_KEY)) || {};
-  const keys = Object.keys(stored).sort();
+function injectAdminPartSearchUI() {
+  const aSel = document.getElementById('selAdminProfile');
+  if (!aSel || document.getElementById('adminPartSearchRow')) return;
+  const parentRow = aSel.parentElement;
+  if (!parentRow) return;
 
-  document.getElementById('topRegisteredCount').textContent = keys.length;
+  const searchRow = document.createElement('div');
+  searchRow.id = 'adminPartSearchRow';
+  searchRow.style.cssText = 'display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px; background:#f0f7ff; padding:8px 10px; border-radius:8px; border:1px solid #90caf9;';
+  searchRow.innerHTML = `
+    <span style="font-size:0.85rem; font-weight:700; color:var(--primary-dark);">🔎 品番検索:</span>
+    <input type="text" id="txtAdminPartSearch" placeholder="品番の一部を入力して絞り込み..." style="flex:1; min-width:180px; padding:6px 10px;" autocomplete="off">
+    <span id="lblAdminSearchHitCount" style="font-size:0.8rem; font-weight:700; color:var(--primary);">全 0 件</span>
+    <button type="button" class="btn" style="padding:5px 10px; font-size:0.78rem;" onclick="clearAdminPartSearch()">クリア</button>
+  `;
+  parentRow.parentNode.insertBefore(searchRow, parentRow);
+
+  const searchInp = document.getElementById('txtAdminPartSearch');
+  searchInp.addEventListener('input', async (e) => {
+    adminPartSearchQuery = e.target.value;
+    await updateProfileDropdowns(true);
+  });
+  searchInp.addEventListener('keydown', async (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      blurActiveInput();
+      const selVal = document.getElementById('selAdminProfile').value;
+      if (selVal) await loadAdminProfile(selVal);
+    }
+  });
+}
+
+async function clearAdminPartSearch() {
+  adminPartSearchQuery = '';
+  const inp = document.getElementById('txtAdminPartSearch');
+  if (inp) inp.value = '';
+  await updateProfileDropdowns(false);
+}
+
+async function updateProfileDropdowns(fromSearchInput = false) {
+  const stored = (await idbGet(STORAGE_KEY)) || {};
+  const allKeys = Object.keys(stored).sort();
+
+  document.getElementById('topRegisteredCount').textContent = allKeys.length;
   const cntA = Object.keys(csvTableA).length;
   const cntB = Object.keys(csvTableB).length;
   document.getElementById('topBadgeA').textContent = cntA ? `${cntA}件読込済` : '未読込';
@@ -164,13 +225,45 @@ async function updateProfileDropdowns() {
   document.getElementById('statusCsvA').textContent = cntA ? `読込済 (${cntA}品番)` : '未読込';
   document.getElementById('statusCsvB').textContent = cntB ? `読込済 (${cntB}品番)` : '未読込';
 
+  // 作業者用プルダウン（全件）
   const wSel = document.getElementById('selWorkerProfile');
-  const aSel = document.getElementById('selAdminProfile');
-  const opts = keys.map(k => `<option value="${k}">${k} (${(stored[k].stepsData || []).length}ステップ)</option>`).join('');
+  const allOpts = allKeys.map(k => `<option value="${k}">${k} (${(stored[k].stepsData || []).length}ステップ)</option>`).join('');
+  wSel.innerHTML = '<option value="">-- 登録済み品番を選択 --</option>' + allOpts;
 
-  wSel.innerHTML = '<option value="">-- 登録済み品番を選択 --</option>' + opts;
-  aSel.innerHTML = '<option value="">-- 編集・確認する品番を選択 --</option>' + opts;
-  if (window.adminActivePart && stored[window.adminActivePart]) {
+  // 管理者用プルダウン（検索キーワードで絞り込み対応）
+  const aSel = document.getElementById('selAdminProfile');
+  const qNorm = normalizeCodeString(adminPartSearchQuery);
+  const qUnified = (typeof unifyAmbiguousCharsKey === 'function') ? unifyAmbiguousCharsKey(qNorm) : qNorm;
+
+  const filteredKeys = !qNorm ? allKeys : allKeys.filter(k => {
+    const kNorm = normalizeCodeString(k);
+    if (kNorm.includes(qNorm)) return true;
+    if (typeof unifyAmbiguousCharsKey === 'function') {
+      return unifyAmbiguousCharsKey(kNorm).includes(qUnified);
+    }
+    return false;
+  });
+
+  const hitLbl = document.getElementById('lblAdminSearchHitCount');
+  if (hitLbl) {
+    hitLbl.textContent = qNorm
+      ? `該当 ${filteredKeys.length} / ${allKeys.length} 件`
+      : `全 ${allKeys.length} 件`;
+  }
+
+  const adminOpts = filteredKeys.map(k => `<option value="${k}">${k} (${(stored[k].stepsData || []).length}ステップ)</option>`).join('');
+  aSel.innerHTML = `<option value="">-- 編集・確認する品番を選択 (${filteredKeys.length}件) --</option>` + adminOpts;
+
+  if (fromSearchInput && qNorm && filteredKeys.length > 0) {
+    // 検索入力時、先頭の候補を自動選択して即座にステップを表示
+    const targetPart = filteredKeys.includes(window.adminActivePart) ? window.adminActivePart : filteredKeys[0];
+    aSel.value = targetPart;
+    window.adminActivePart = targetPart;
+    window.adminStepsData = stored[targetPart].stepsData || [];
+    selectedAdminStepIdx = 0;
+    renderAdminStepsList();
+    drawAdminCanvas();
+  } else if (window.adminActivePart && stored[window.adminActivePart] && filteredKeys.includes(window.adminActivePart)) {
     aSel.value = window.adminActivePart;
   }
 }
@@ -197,7 +290,7 @@ async function createOrSwitchAdminProfile() {
     await idbSet(STORAGE_KEY, stored);
   }
   document.getElementById('txtNewProfileName').value = '';
-  await updateProfileDropdowns();
+  await clearAdminPartSearch();
   await loadAdminProfile(name);
 }
 
@@ -219,7 +312,7 @@ async function autoSaveAdminProfile() {
   const stored = (await idbGet(STORAGE_KEY)) || {};
   stored[window.adminActivePart] = { stepsData: window.adminStepsData };
   await idbSet(STORAGE_KEY, stored);
-  await updateProfileDropdowns();
+  await updateProfileDropdowns(false);
 }
 
 async function saveCurrentAdminProfileExplicit() {
@@ -238,14 +331,14 @@ async function deleteAdminProfile() {
   await idbSet(STORAGE_KEY, stored);
   window.adminActivePart = '';
   window.adminStepsData = [];
-  await updateProfileDropdowns();
+  await updateProfileDropdowns(false);
   renderAdminStepsList();
 }
 
 function renderAdminStepsList() {
   const container = document.getElementById('adminStepsContainer');
   if (!window.adminActivePart) {
-    container.innerHTML = '<p style="font-size:0.85rem; color:var(--muted);">上のプルダウンから品番を選択するか、CSVを取り込んでください。</p>';
+    container.innerHTML = '<p style="font-size:0.85rem; color:var(--muted);">上の検索欄またはプルダウンから品番を選択するか、CSVを取り込んでください。</p>';
     return;
   }
 
@@ -489,7 +582,7 @@ function importAllProfilesJson(e) {
       if (obj.csvTableB) { csvTableB = obj.csvTableB; await idbSet(TABLE_B_KEY, csvTableB); }
       if (obj.qrRangeConfig) { qrRangeConfig = obj.qrRangeConfig; localStorage.setItem(QR_CONFIG_KEY, JSON.stringify(qrRangeConfig)); }
       if (obj.audioConfig) { audioConfig = obj.audioConfig; localStorage.setItem(AUDIO_CONFIG_KEY, JSON.stringify(audioConfig)); applyAudioConfigToUI(); }
-      await updateProfileDropdowns();
+      await updateProfileDropdowns(false);
       alert('JSON設定データを復元しました。');
     } catch (err) {
       alert('JSONファイルの形式が正しくありません。');
@@ -505,6 +598,12 @@ function setupKeyboardShortcuts() {
   document.getElementById('workerStepBarcodeInput').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); handleWorkerBarcodeInput(); }
   });
+  const workerTopInp = document.getElementById('txtWorkerInput');
+  if (workerTopInp) {
+    workerTopInp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); registerWorker(); }
+    });
+  }
 
   window.addEventListener('keydown', async (e) => {
     const tag = (e.target && e.target.tagName) ? e.target.tagName : '';
@@ -528,6 +627,12 @@ function setupKeyboardShortcuts() {
       headlessScannerBuffer = '';
       if (scanned.length >= 2) {
         e.preventDefault();
+        // 作業者登録モーダル表示中は作業者IDとして登録
+        const workerModal = document.getElementById('workerAuthModal');
+        if (workerModal && workerModal.style.display === 'flex') {
+          await completeWorkerModalRegistration(scanned);
+          return;
+        }
         if (activePage === 'partScanPage') {
           await tryStartInspectionWithPart(scanned);
         } else if (activePage === 'inspectPage' && !window.isChatteringCooldown && !isInspectingStep) {
