@@ -1,18 +1,14 @@
 // =========================================================
-// app_admin.js : 画面遷移・材料マスター画面(CSV一括取込対応)・製品ステップ紐づけ
+// app_admin.js : 画面遷移・材料マスター画面・全体枠固定（枠サイズ変更オフ）版
 // =========================================================
 window.adminActivePart = '';
 window.adminStepsData = [];
 let selectedAdminStepIdx = 0;
-let isDraggingRoi = false;
-let dragStartX = 0, dragStartY = 0;
 
 // 材料マスター管理用の状態変数
 window.materialMastersCache = {};
 window.activeMaterialCode = '';
 let materialSearchQuery = '';
-let isDraggingMatRoi = false;
-let matDragStartX = 0, matDragStartY = 0;
 
 let headlessScannerBuffer = '';
 let headlessScannerLastTime = 0;
@@ -28,15 +24,29 @@ const adminCtx = adminCanvas.getContext('2d', { willReadFrequently: true });
 
 window.addEventListener('DOMContentLoaded', async () => {
   await loadSavedConfigs();
+  disableRoiResizeControlsUI();
   injectMaterialMasterPageAndMenu();
   injectAdminPartSearchUI();
-  setupCanvasTouchAndMouse();
-  setupMaterialCanvasTouchAndMouse();
   setupKeyboardShortcuts();
   await updateProfileDropdowns();
   await updateMaterialMasterDropdowns();
   await initAI();
 });
+
+// HTML側の枠サイズ変更ボタン（「← 左」「幅＋」「枠を100%に戻す」等）を非表示化し、カーソルを標準に戻す
+function disableRoiResizeControlsUI() {
+  if (adminCanvas) adminCanvas.style.cursor = 'default';
+  if (mainCanvas) mainCanvas.style.cursor = 'default';
+
+  // 設定画面内の「setSelectedStepFullFrame」ボタンと「nudgeAdminStep」ボタン群を非表示にする
+  document.querySelectorAll('button[onclick*="setSelectedStepFullFrame"]').forEach(btn => {
+    btn.style.display = 'none';
+  });
+  const nudgeBtn = document.querySelector('button[onclick*="nudgeAdminStep"]');
+  if (nudgeBtn && nudgeBtn.parentElement) {
+    nudgeBtn.parentElement.style.display = 'none';
+  }
+}
 
 async function navigateTo(pageId) {
   blurActiveInput();
@@ -151,16 +161,16 @@ function drawSmartRoiOverlay(ctx, canvasW, canvasH, step, labelPrefix) {
   const coords = getScaledStepCoords(step, canvasW, canvasH);
   const color = step.type === 'BAKERY' ? '#ab47bc' : '#00e676';
   ctx.strokeStyle = color;
-  ctx.lineWidth = 4;
-  ctx.strokeRect(coords.x, coords.y, coords.w, coords.h);
+  ctx.lineWidth = 6;
+  ctx.strokeRect(coords.x + 3, coords.y + 3, coords.w - 6, coords.h - 6);
 
-  const labelText = `${labelPrefix}${step.name} (${step.type === 'BAKERY' ? '🥐パン屋AI' : '📷コード照合'})`;
+  const labelText = `${labelPrefix}${step.name} (${step.type === 'BAKERY' ? '🥐パン屋AI・全体検査' : '📷コード照合'})`;
   ctx.font = 'bold 15px sans-serif';
   const textWidth = ctx.measureText(labelText).width;
-  const boxW = Math.min(canvasW - 8, textWidth + 18);
+  const boxW = Math.min(canvasW - 12, textWidth + 18);
   const boxH = 26;
-  const boxX = Math.max(4, Math.min(coords.x, canvasW - boxW - 4));
-  const boxY = (coords.y - boxH < 4) ? (coords.y + 4) : (coords.y - boxH);
+  const boxX = 8;
+  const boxY = canvasH - boxH - 8;
 
   ctx.fillStyle = 'rgba(0, 0, 0, 0.82)';
   ctx.fillRect(boxX, boxY, boxW, boxH);
@@ -197,10 +207,9 @@ function drawAdminCanvas() {
 }
 
 // =========================================================
-// 🥐 材料マスター登録・編集画面の動的生成 ＆ CSV一括取込ロジック
+// 🥐 材料マスター登録・編集画面（枠サイズ変更オフ・全体検査固定版）
 // =========================================================
 function injectMaterialMasterPageAndMenu() {
-  // 1. トップ画面のメニューに「🥐 材料マスターの登録・編集」ボタンを追加
   const topPage = document.getElementById('topMenuPage');
   if (topPage && !document.getElementById('btnMenuMaterialMaster')) {
     const menuGrid = topPage.querySelector('.menu-grid');
@@ -217,17 +226,16 @@ function injectMaterialMasterPageAndMenu() {
     }
   }
 
-  // 2. 材料マスター登録画面（#materialMasterPage）をbodyに追加
   if (!document.getElementById('materialMasterPage')) {
     const matPage = document.createElement('main');
     matPage.className = 'page-view';
     matPage.id = 'materialMasterPage';
     matPage.innerHTML = `
       <div class="nav-banner" style="background:var(--ai-light); color:var(--ai-color); border-left-color:var(--ai-color);">
-        🥐 パン屋AI 材料マスター登録・編集画面（ここで登録した材料マスターを各製品の検査ステップに紐づけます）
+        🥐 パン屋AI 材料マスター登録・編集画面（カメラ画面全体で材料の特徴を学習・照合します）
       </div>
 
-      <!-- ★ 新設：材料マスターCSV一括取込カード ★ -->
+      <!-- 材料マスターCSV一括取込カード -->
       <div class="card">
         <div class="card-title" style="color:var(--ai-color); border-left-color:var(--ai-color);">
           📄 材料マスター（品番・名称メモ）のCSV一括取込 ／ 一覧CSV出力（UTF-8・Shift-JIS自動判別）
@@ -280,32 +288,21 @@ function injectMaterialMasterPageAndMenu() {
         </div>
       </div>
 
-      <!-- ② カメラ映像 ＆ 良品マスター登録エリア -->
+      <!-- ② カメラ映像 ＆ 良品マスター登録エリア（全体枠固定） -->
       <div class="card">
         <div class="card-title" style="color:var(--ai-color); border-left-color:var(--ai-color);">
-          ② 材料の検査枠設定 ＆ 良品マスター画像の撮影・変更
+          ② 良品マスター画像の撮影・変更（カメラ枠全体 100% 固定）
         </div>
 
         <div class="admin-layout">
           <div style="display:flex; flex-direction:column; gap:8px;">
-            <div style="display:flex; gap:6px; flex-wrap:wrap;">
+            <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center; justify-content:space-between;">
               <button type="button" class="btn btn-ai" id="btnMaterialCam" onclick="toggleAdminCamera()">📷 材料撮影用カメラ起動</button>
-              <button type="button" class="btn" onclick="setMaterialFullFrame()">🔲 枠をカメラ全体(100%)に戻す</button>
+              <span style="font-size:0.8rem; font-weight:700; color:var(--ai-color);">🔲 検査範囲: カメラ枠全体 (固定)</span>
             </div>
 
             <div class="viewport-box">
-              <canvas id="materialCanvas" width="640" height="480" style="width:100%; height:100%; object-fit:contain; display:block; touch-action:none; cursor:crosshair;"></canvas>
-            </div>
-
-            <div style="display:flex; gap:4px; flex-wrap:wrap; justify-content:center;">
-              <button type="button" class="btn" onclick="nudgeMaterialRoi(-10,0,0,0)">← 左</button>
-              <button type="button" class="btn" onclick="nudgeMaterialRoi(10,0,0,0)">→ 右</button>
-              <button type="button" class="btn" onclick="nudgeMaterialRoi(0,-10,0,0)">↑ 上</button>
-              <button type="button" class="btn" onclick="nudgeMaterialRoi(0,10,0,0)">↓ 下</button>
-              <button type="button" class="btn" onclick="nudgeMaterialRoi(0,0,15,0)">幅＋</button>
-              <button type="button" class="btn" onclick="nudgeMaterialRoi(0,0,-15,0)">幅－</button>
-              <button type="button" class="btn" onclick="nudgeMaterialRoi(0,0,0,15)">高＋</button>
-              <button type="button" class="btn" onclick="nudgeMaterialRoi(0,0,0,-15)">高－</button>
+              <canvas id="materialCanvas" width="640" height="480" style="width:100%; height:100%; object-fit:contain; display:block; cursor:default;"></canvas>
             </div>
           </div>
 
@@ -317,7 +314,7 @@ function injectMaterialMasterPageAndMenu() {
             <div class="card" style="background:#f8fafc; margin-top:auto;">
               <div style="font-size:0.82rem; color:var(--muted); line-height:1.5;">
                 💡 <strong>材料マスターの使いかた:</strong><br>
-                1. CSV取込または手動で材料品番の枠組みを作り、必要な材料から順に「良品マスター画像（3〜5枚推奨）」を撮影します。<br>
+                1. カメラを起動して材料を映し、「📸 良品マスターとして追加」で3〜5枚ほど撮影します（常にカメラ枠全体が検査範囲となります）。<br>
                 2. 「⚙️ 検査項目の登録・システム設定」画面を開き、各製品品番のステップで材料マスターを選ぶだけで紐づけできます。
               </div>
               <div style="margin-top:10px; display:flex; justify-content:flex-end;">
@@ -338,7 +335,7 @@ function injectMaterialMasterPageAndMenu() {
   }
 }
 
-// ★ 材料マスターCSV一括取込処理（UTF-8 / Shift-JIS自動判別 ＆ 既存良品データ保護マージ） ★
+// 材料マスターCSV一括取込処理
 function handleMaterialCsvSelect(event) {
   blurActiveInput();
   const file = event.target.files[0];
@@ -354,7 +351,7 @@ function handleMaterialCsvSelect(event) {
       text = new TextDecoder('shift-jis').decode(buf);
     }
     await importMaterialMastersFromCsvText(text);
-    event.target.value = ''; // 同じファイル名でも再選択可能にする
+    event.target.value = '';
   };
   reader.readAsArrayBuffer(file);
 }
@@ -388,13 +385,12 @@ async function importMaterialMastersFromCsvText(text) {
     if (!firstImportedCode) firstImportedCode = matCode;
 
     if (materials[matCode]) {
-      // 既存の材料マスターがある場合は、撮影済みの良品データや枠座標を維持したままメモ・閾値のみ更新
       if (matMemo) materials[matCode].memo = matMemo;
       if (matTh !== null) materials[matCode].bakeryThreshold = matTh;
+      materials[matCode].isFullFrame = true;
       materials[matCode].updatedAt = new Date().toLocaleString('ja-JP');
       updatedCount++;
     } else {
-      // 新規材料マスターの枠組みを作成
       materials[matCode] = {
         code: matCode,
         memo: matMemo,
@@ -430,7 +426,6 @@ async function importMaterialMastersFromCsvText(text) {
   );
 }
 
-// 登録されている材料マスター一覧をCSVとして書き出す（棚卸し・Excel編集用）
 async function exportMaterialListCsv() {
   blurActiveInput();
   const materials = (await idbGet(MATERIAL_MASTER_KEY)) || {};
@@ -455,7 +450,6 @@ async function exportMaterialListCsv() {
   a.click();
 }
 
-// 材料マスターの一括リセット（良品登録済みの材料を残すか選択可能）
 async function resetAllMaterialMasters() {
   blurActiveInput();
   const materials = (await idbGet(MATERIAL_MASTER_KEY)) || {};
@@ -602,6 +596,7 @@ async function saveCurrentMaterialMaster() {
 
   const memoInp = document.getElementById('txtMaterialMemo');
   if (memoInp) cur.memo = memoInp.value.trim();
+  cur.isFullFrame = true;
   cur.updatedAt = new Date().toLocaleString('ja-JP');
 
   await idbSet(MATERIAL_MASTER_KEY, materials);
@@ -628,6 +623,7 @@ async function renameCurrentMaterialMaster() {
   const matData = materials[oldCode];
   matData.code = newCode;
   matData.memo = newMemo;
+  matData.isFullFrame = true;
   matData.updatedAt = new Date().toLocaleString('ja-JP');
 
   if (newCode !== oldCode) {
@@ -721,7 +717,7 @@ function renderMaterialEditorPanel() {
 
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
         <button type="button" class="btn btn-ai" style="flex:1.5; padding:12px; font-size:0.95rem;" onclick="captureMaterialMasterSample()">
-          📸 現在のカメラ枠内を「良品マスター」として追加
+          📸 カメラ枠全体を「良品マスター」として追加
         </button>
         <button type="button" class="btn btn-danger" style="padding:12px;" onclick="clearMaterialMasterSamples()">
           🗑️ 良品データを全クリア
@@ -760,9 +756,10 @@ async function captureMaterialMasterSample() {
   if (!mat) return;
 
   const matCanvas = document.getElementById('materialCanvas');
-  const vec = await extractBakeryFeatureVector(matCanvas, mat);
+  const vec = await extractBakeryFeatureVector(matCanvas);
   if (!mat.bakerySamples) mat.bakerySamples = [];
   mat.bakerySamples.push(vec);
+  mat.isFullFrame = true;
   mat.updatedAt = new Date().toLocaleString('ja-JP');
 
   await idbSet(MATERIAL_MASTER_KEY, materials);
@@ -795,7 +792,7 @@ async function testCurrentMaterialMasterLive() {
     return alert('先に「📸 良品マスターとして追加」で1枚以上登録してください');
   }
   const matCanvas = document.getElementById('materialCanvas');
-  const feat = await extractBakeryFeatureVector(matCanvas, mat);
+  const feat = await extractBakeryFeatureVector(matCanvas);
   let bestSim = 0;
   mat.bakerySamples.forEach(s => {
     const sim = computeCosineSimilarity(feat, s) * 100;
@@ -847,105 +844,20 @@ function drawMaterialCanvas() {
     const dummyStep = {
       name: `${window.activeMaterialCode}${mat.memo ? ` (${mat.memo})` : ''}`,
       type: 'BAKERY',
-      isFullFrame: mat.isFullFrame,
-      x: mat.x, y: mat.y, w: mat.w, h: mat.h,
-      baseW: mat.baseW || matCanvas.width,
-      baseH: mat.baseH || matCanvas.height
+      isFullFrame: true
     };
-    drawSmartRoiOverlay(ctx, matCanvas.width, matCanvas.height, dummyStep, '材料マスター枠: ');
+    drawSmartRoiOverlay(ctx, matCanvas.width, matCanvas.height, dummyStep, '材料マスター: ');
   }
 }
 
-async function setMaterialFullFrame() {
-  if (!window.activeMaterialCode) return;
-  const matCanvas = document.getElementById('materialCanvas');
-  const materials = (await idbGet(MATERIAL_MASTER_KEY)) || {};
-  const mat = materials[window.activeMaterialCode];
-  if (!mat) return;
-  mat.isFullFrame = true;
-  mat.x = 0; mat.y = 0;
-  mat.w = matCanvas.width; mat.h = matCanvas.height;
-  mat.baseW = matCanvas.width; mat.baseH = matCanvas.height;
-  await idbSet(MATERIAL_MASTER_KEY, materials);
-  window.materialMastersCache = materials;
-  drawMaterialCanvas();
-}
-
-async function nudgeMaterialRoi(dx, dy, dw, dh) {
-  if (!window.activeMaterialCode) return;
-  const matCanvas = document.getElementById('materialCanvas');
-  const materials = (await idbGet(MATERIAL_MASTER_KEY)) || {};
-  const mat = materials[window.activeMaterialCode];
-  if (!mat) return;
-
-  mat.isFullFrame = false;
-  mat.baseW = matCanvas.width;
-  mat.baseH = matCanvas.height;
-  mat.x = Math.max(0, Math.min(matCanvas.width - 40, (mat.x || 0) + dx));
-  mat.y = Math.max(0, Math.min(matCanvas.height - 40, (mat.y || 0) + dy));
-  mat.w = Math.max(40, Math.min(matCanvas.width - mat.x, (mat.w || matCanvas.width) + dw));
-  mat.h = Math.max(40, Math.min(matCanvas.height - mat.y, (mat.h || matCanvas.height) + dh));
-
-  await idbSet(MATERIAL_MASTER_KEY, materials);
-  window.materialMastersCache = materials;
-  drawMaterialCanvas();
-}
-
-function setupMaterialCanvasTouchAndMouse() {
-  const matCanvas = document.getElementById('materialCanvas');
-  if (!matCanvas) return;
-
-  function getCoords(e) {
-    const rect = matCanvas.getBoundingClientRect();
-    const cx = e.touches ? e.touches[0].clientX : e.clientX;
-    const cy = e.touches ? e.touches[0].clientY : e.clientY;
-    return {
-      x: Math.round((cx - rect.left) * (matCanvas.width / rect.width)),
-      y: Math.round((cy - rect.top) * (matCanvas.height / rect.height))
-    };
-  }
-  function onStart(e) {
-    if (e.touches && e.touches.length > 1) return;
-    if (!window.activeMaterialCode || !window.materialMastersCache[window.activeMaterialCode]) return;
-    if (e.cancelable) e.preventDefault();
-    blurActiveInput();
-    const p = getCoords(e);
-    matDragStartX = p.x; matDragStartY = p.y;
-    isDraggingMatRoi = true;
-  }
-  function onMove(e) {
-    if (!isDraggingMatRoi) return;
-    if (e.cancelable) e.preventDefault();
-    const p = getCoords(e);
-    const mat = window.materialMastersCache[window.activeMaterialCode];
-    if (!mat) return;
-    mat.isFullFrame = false;
-    mat.baseW = matCanvas.width; mat.baseH = matCanvas.height;
-    mat.x = Math.min(matDragStartX, p.x);
-    mat.y = Math.min(matDragStartY, p.y);
-    mat.w = Math.max(30, Math.abs(p.x - matDragStartX));
-    mat.h = Math.max(30, Math.abs(p.y - matDragStartY));
-    drawMaterialCanvas();
-  }
-  async function onEnd() {
-    if (!isDraggingMatRoi) return;
-    isDraggingMatRoi = false;
-    const materials = (await idbGet(MATERIAL_MASTER_KEY)) || {};
-    if (materials[window.activeMaterialCode] && window.materialMastersCache[window.activeMaterialCode]) {
-      materials[window.activeMaterialCode] = window.materialMastersCache[window.activeMaterialCode];
-      await idbSet(MATERIAL_MASTER_KEY, materials);
-    }
-  }
-  matCanvas.addEventListener('mousedown', onStart);
-  matCanvas.addEventListener('mousemove', onMove);
-  matCanvas.addEventListener('mouseup', onEnd);
-  matCanvas.addEventListener('touchstart', onStart, { passive: false });
-  matCanvas.addEventListener('touchmove', onMove, { passive: false });
-  matCanvas.addEventListener('touchend', onEnd);
-}
+// 旧ボタン互換用の空関数（枠変更オフのため何もしない）
+async function setSelectedStepFullFrame() {}
+async function nudgeAdminStep() {}
+async function setMaterialFullFrame() {}
+async function nudgeMaterialRoi() {}
 
 // =========================================================
-// 🔎 管理者用：製品の品番検索（部分一致フィルタ）＆ ステップへの材料マスター紐づけ
+// 🔎 管理者用：製品の品番検索 ＆ ステップへの材料マスター紐づけ
 // =========================================================
 function injectAdminPartSearchUI() {
   const aSel = document.getElementById('selAdminProfile');
@@ -1126,7 +1038,7 @@ function renderAdminStepsList() {
     const isSel = idx === selectedAdminStepIdx ? 'selected' : '';
     const originBadge = s.fromCsv
       ? `<span style="font-size:0.72rem; background:var(--primary-light); color:var(--primary-dark); padding:2px 6px; border-radius:4px; font-weight:700;">CSV連携${s.refName ? ` (${s.refName})` : ''}</span>`
-      : `<span style="font-size:0.72rem; background:var(--ai-light); color:var(--ai-color); padding:2px 6px; border-radius:4px; font-weight:700;">${s.type === 'BAKERY' ? '材料マスター照合' : '追加ステップ'}</span>`;
+      : `<span style="font-size:0.72rem; background:var(--ai-light); color:var(--ai-color); padding:2px 6px; border-radius:4px; font-weight:700;">${s.type === 'BAKERY' ? '材料マスター照合(全体枠)' : '追加ステップ'}</span>`;
 
     const linkedMat = s.materialCode ? materials[s.materialCode] : null;
     const matSampleCnt = linkedMat ? (linkedMat.bakerySamples || []).length : (s.bakerySamples || []).length;
@@ -1177,7 +1089,7 @@ function renderAdminStepsList() {
             <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
               <span>
                 状態: ${s.materialCode
-                  ? (linkedMat ? `<strong style="color:var(--success);">✅ 材料 [${s.materialCode}] 連携中 (良品:${matSampleCnt}枚)</strong>` : `<strong style="color:var(--danger);">⚠️ 材料 [${s.materialCode}] が未登録</strong>`)
+                  ? (linkedMat ? `<strong style="color:var(--success);">✅ 材料 [${s.materialCode}] 連携中 (良品:${matSampleCnt}枚 / 全体枠固定)</strong>` : `<strong style="color:var(--danger);">⚠️ 材料 [${s.materialCode}] が未登録</strong>`)
                   : `<span style="color:var(--muted);">材料マスター未選択 (個別良品:${matSampleCnt}枚)</span>`}
               </span>
               <div style="display:flex; gap:6px; align-items:center;">
@@ -1223,11 +1135,8 @@ async function assignMaterialMasterToStep(stepIdx, matCode) {
       step.name = mat.memo ? `${matCode} (${mat.memo})` : matCode;
     }
     step.bakeryThreshold = mat.bakeryThreshold || 80;
-    step.isFullFrame = mat.isFullFrame ?? true;
-    step.x = mat.x || 0; step.y = mat.y || 0;
-    step.w = mat.w || 640; step.h = mat.h || 480;
-    step.baseW = mat.baseW || 640; step.baseH = mat.baseH || 480;
   }
+  step.isFullFrame = true;
   await autoSaveAdminProfile();
   renderAdminStepsList();
   drawAdminCanvas();
@@ -1249,6 +1158,7 @@ function selectAdminStep(idx) {
 async function updateAdminStepField(idx, field, val) {
   if (!window.adminStepsData[idx]) return;
   window.adminStepsData[idx][field] = val;
+  window.adminStepsData[idx].isFullFrame = true;
   await autoSaveAdminProfile();
   renderAdminStepsList();
   drawAdminCanvas();
@@ -1290,13 +1200,9 @@ async function addAdminCustomStep(type) {
     type: type,
     materialCode: defaultMatCode,
     fromCsv: false,
-    isFullFrame: defaultMat ? (defaultMat.isFullFrame ?? true) : true,
-    x: defaultMat ? (defaultMat.x || 0) : 0,
-    y: defaultMat ? (defaultMat.y || 0) : 0,
-    w: defaultMat ? (defaultMat.w || adminCanvas.width) : adminCanvas.width,
-    h: defaultMat ? (defaultMat.h || adminCanvas.height) : adminCanvas.height,
-    baseW: defaultMat ? (defaultMat.baseW || adminCanvas.width) : adminCanvas.width,
-    baseH: defaultMat ? (defaultMat.baseH || adminCanvas.height) : adminCanvas.height,
+    isFullFrame: true,
+    x: 0, y: 0, w: adminCanvas.width, h: adminCanvas.height,
+    baseW: adminCanvas.width, baseH: adminCanvas.height,
     bakerySamples: [],
     bakeryThreshold: defaultMat ? (defaultMat.bakeryThreshold || 80) : 80,
     expectedBarcode: ''
@@ -1313,6 +1219,7 @@ async function duplicateSelectedStep() {
   const copy = JSON.parse(JSON.stringify(cur));
   copy.name = cur.name + '_複製';
   copy.fromCsv = false;
+  copy.isFullFrame = true;
   window.adminStepsData.push(copy);
   selectedAdminStepIdx = window.adminStepsData.length - 1;
   await autoSaveAdminProfile();
@@ -1320,37 +1227,13 @@ async function duplicateSelectedStep() {
   drawAdminCanvas();
 }
 
-async function setSelectedStepFullFrame() {
-  const cur = window.adminStepsData[selectedAdminStepIdx];
-  if (!cur) return;
-  cur.isFullFrame = true;
-  cur.x = 0; cur.y = 0;
-  cur.w = adminCanvas.width; cur.h = adminCanvas.height;
-  cur.baseW = adminCanvas.width; cur.baseH = adminCanvas.height;
-  await autoSaveAdminProfile();
-  drawAdminCanvas();
-}
-
-async function nudgeAdminStep(dx, dy, dw, dh) {
-  const s = window.adminStepsData[selectedAdminStepIdx];
-  if (!s) return;
-  s.isFullFrame = false;
-  s.baseW = adminCanvas.width;
-  s.baseH = adminCanvas.height;
-  s.x = Math.max(0, Math.min(adminCanvas.width - 40, (s.x || 0) + dx));
-  s.y = Math.max(0, Math.min(adminCanvas.height - 40, (s.y || 0) + dy));
-  s.w = Math.max(40, Math.min(adminCanvas.width - s.x, (s.w || adminCanvas.width) + dw));
-  s.h = Math.max(40, Math.min(adminCanvas.height - s.y, (s.h || adminCanvas.height) + dh));
-  await autoSaveAdminProfile();
-  drawAdminCanvas();
-}
-
 async function registerBakerySample(idx) {
   if (!isCamRunning) return alert('先に「📷 設定用カメラ起動」を押してください');
   const s = window.adminStepsData[idx];
-  const vec = await extractBakeryFeatureVector(adminCanvas, s);
+  const vec = await extractBakeryFeatureVector(adminCanvas);
   if (!s.bakerySamples) s.bakerySamples = [];
   s.bakerySamples.push(vec);
+  s.isFullFrame = true;
   playBuzzerPattern('OK');
   await autoSaveAdminProfile();
   renderAdminStepsList();
@@ -1371,52 +1254,6 @@ async function captureExpectedBarcodeFromCam(idx) {
   playBuzzerPattern('OK');
   await autoSaveAdminProfile();
   renderAdminStepsList();
-}
-
-function setupCanvasTouchAndMouse() {
-  function getCoords(e) {
-    const rect = adminCanvas.getBoundingClientRect();
-    const cx = e.touches ? e.touches[0].clientX : e.clientX;
-    const cy = e.touches ? e.touches[0].clientY : e.clientY;
-    return {
-      x: Math.round((cx - rect.left) * (adminCanvas.width / rect.width)),
-      y: Math.round((cy - rect.top) * (adminCanvas.height / rect.height))
-    };
-  }
-  function onStart(e) {
-    if (e.touches && e.touches.length > 1) return;
-    if (!window.adminStepsData[selectedAdminStepIdx]) return;
-    if (e.cancelable) e.preventDefault();
-    blurActiveInput();
-    const p = getCoords(e);
-    dragStartX = p.x; dragStartY = p.y;
-    isDraggingRoi = true;
-  }
-  function onMove(e) {
-    if (!isDraggingRoi) return;
-    if (e.cancelable) e.preventDefault();
-    const p = getCoords(e);
-    const s = window.adminStepsData[selectedAdminStepIdx];
-    if (!s) return;
-    s.isFullFrame = false;
-    s.baseW = adminCanvas.width; s.baseH = adminCanvas.height;
-    s.x = Math.min(dragStartX, p.x);
-    s.y = Math.min(dragStartY, p.y);
-    s.w = Math.max(30, Math.abs(p.x - dragStartX));
-    s.h = Math.max(30, Math.abs(p.y - dragStartY));
-    drawAdminCanvas();
-  }
-  async function onEnd() {
-    if (!isDraggingRoi) return;
-    isDraggingRoi = false;
-    await autoSaveAdminProfile();
-  }
-  adminCanvas.addEventListener('mousedown', onStart);
-  adminCanvas.addEventListener('mousemove', onMove);
-  adminCanvas.addEventListener('mouseup', onEnd);
-  adminCanvas.addEventListener('touchstart', onStart, { passive: false });
-  adminCanvas.addEventListener('touchmove', onMove, { passive: false });
-  adminCanvas.addEventListener('touchend', onEnd);
 }
 
 // JSONバックアップ（材料マスターも一括で書き出し・復元）
