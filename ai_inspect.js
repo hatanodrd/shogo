@@ -1,5 +1,5 @@
 // =========================================================
-// ai_inspect.js : パン屋AI（常時カメラ全体枠固定）・バーコード中央枠限定照合
+// ai_inspect.js : パン屋AI（3連写手ブレ吸収＋他材料ライバル相対比較）・バーコード照合
 // =========================================================
 window.currentInspectPart = '';
 window.currentSteps = [];
@@ -29,7 +29,7 @@ async function initAI() {
   try {
     await tf.ready();
     mobilenetModel = await mobilenet.load({ version: 2, alpha: 1.0 });
-    badge.textContent = '🥐 パン屋AI ＆ 🎯高精度バーコード 準備完了';
+    badge.textContent = '🥐 パン屋AI(3連写+相対判定) ＆ 🎯バーコード 準備完了';
     badge.style.color = '#00e676';
   } catch (e) {
     badge.textContent = '🥐 パン屋AI (高速特徴モード) 準備完了';
@@ -45,8 +45,7 @@ function loadQuaggaScript() {
   document.head.appendChild(s);
 }
 
-// ★ AIカメラ検査（BAKERY）は常にカメラ枠全体（100%）に固定 ★
-// （BARCODE検査のみ読み取り精度向上のため中央の横長枠に限定）
+// AIカメラ検査（BAKERY）は常にカメラ枠全体（100%）に固定
 function getScaledStepCoords(step, targetW, targetH) {
   if (step && step.type === 'BARCODE') {
     const w = Math.round(targetW * 0.76);
@@ -58,7 +57,6 @@ function getScaledStepCoords(step, targetW, targetH) {
       h: h
     };
   }
-  // パン屋AI（および材料マスター撮影時）は常に画面全体
   return { x: 0, y: 0, w: targetW, h: targetH };
 }
 
@@ -86,13 +84,12 @@ window.addEventListener('DOMContentLoaded', () => {
         ctx.stroke();
       }
 
-      // 全体枠またはバーコード枠の描画
       ctx.strokeStyle = color;
       ctx.lineWidth = 6;
       ctx.strokeRect(coords.x + 3, coords.y + 3, coords.w - 6, coords.h - 6);
 
       const matTag = (!isBarcode && step.materialCode) ? ` [材料:${step.materialCode}]` : '';
-      const labelText = `${labelPrefix}${step.name}${matTag} (${isBarcode ? '📷枠内に収めて検査ボタンを押す' : '🥐パン屋AI・全体検査'})`;
+      const labelText = `${labelPrefix}${step.name}${matTag} (${isBarcode ? '📷枠内に収めて検査ボタンを押す' : '🥐3連写＋ライバル比較AI'})`;
       ctx.font = 'bold 15px sans-serif';
       const textWidth = ctx.measureText(labelText).width;
       const boxW = Math.min(canvasW - 12, textWidth + 18);
@@ -151,6 +148,126 @@ function computeCosineSimilarity(a, b) {
     nb += b[i] * b[i];
   }
   return dot / ((Math.sqrt(na) * Math.sqrt(nb)) || 1);
+}
+
+// =========================================================
+// 🚀 案3（3連写ブレ吸収）＋ 案1（他材料マスターとの相対比較）統合判定エンジン
+// =========================================================
+async function evaluateBakeryWithBurstAndRivals(sourceCanvas, targetSamples, targetThreshold, targetMatKey, allMaterialsMap) {
+  const burstCount = 3;      // 3連写
+  const burstDelayMs = 140;  // 0.14秒間隔（計約0.3秒）
+  const videoEl = document.getElementById('videoSource');
+
+  let bestTargetSim = -1;
+  let bestFrameFeat = null;
+
+  // 1. 【案3】3連写して手ブレの少ない（正解材料との一致率が最も高い）ベストフレームを選出
+  for (let b = 0; b < burstCount; b++) {
+    if (b > 0) {
+      await new Promise(r => setTimeout(r, burstDelayMs));
+      if (videoEl && isCamRunning && videoEl.readyState >= 2) {
+        sourceCanvas.getContext('2d').drawImage(videoEl, 0, 0, sourceCanvas.width, sourceCanvas.height);
+      }
+    }
+    const feat = await extractBakeryFeatureVector(sourceCanvas);
+    let frameSim = 0;
+    targetSamples.forEach(sample => {
+      const sim = computeCosineSimilarity(feat, sample) * 100;
+      if (sim > frameSim) frameSim = sim;
+    });
+
+    if (frameSim > bestTargetSim) {
+      bestTargetSim = frameSim;
+      bestFrameFeat = feat;
+    }
+  }
+
+  const targetScore = Math.round(bestTargetSim);
+
+  // 2. 【案1】他の登録済み材料マスター（ライバル品）すべてと同時比較
+  let bestRivalCode = null;
+  let bestRivalMemo = '';
+  let bestRivalSim = -1;
+
+  if (allMaterialsMap && bestFrameFeat) {
+    const matKeys = Object.keys(allMaterialsMap);
+    for (let i = 0; i < matKeys.length; i++) {
+      const k = matKeys[i];
+      // 自分自身の材料マスターはスキップ
+      if (targetMatKey && normalizeCodeString(k) === normalizeCodeString(targetMatKey)) continue;
+
+      const rivalMat = allMaterialsMap[k];
+      if (!rivalMat || !rivalMat.bakerySamples || rivalMat.bakerySamples.length === 0) continue;
+
+      let rSim = 0;
+      rivalMat.bakerySamples.forEach(sample => {
+        const s = computeCosineSimilarity(bestFrameFeat, sample) * 100;
+        if (s > rSim) rSim = s;
+      });
+
+      if (rSim > bestRivalSim) {
+        bestRivalSim = rSim;
+        bestRivalCode = k;
+        bestRivalMemo = rivalMat.memo || '';
+      }
+    }
+  }
+
+  const rivalScore = bestRivalCode ? Math.round(bestRivalSim) : null;
+  const marginDiff = rivalScore !== null ? (targetScore - rivalScore) : null;
+
+  // 3. 総合合否判定ロジック
+  // (A) ライバル品の方がスコアが高い（または同点）場合は、仮に閾値を超えていても「類似異品」として確実にNGにする
+  if (rivalScore !== null && rivalScore >= targetScore) {
+    const rivalLabel = bestRivalMemo ? `${bestRivalCode} (${bestRivalMemo})` : bestRivalCode;
+    return {
+      passed: false,
+      targetScore,
+      rivalCode: bestRivalCode,
+      rivalLabel,
+      rivalScore,
+      reason: `⚠️ 類似品（異品）の可能性があります！\n・対象材料の一致率: ${targetScore}%\n・他材料 [${rivalLabel}] の一致率: ${rivalScore}% (ライバル品の方が高スコア)`
+    };
+  }
+
+  // (B) 通常の絶対閾値クリア（かつライバル品にも勝っている）
+  if (targetScore >= targetThreshold) {
+    return {
+      passed: true,
+      targetScore,
+      rivalCode: bestRivalCode,
+      rivalScore,
+      marginDiff,
+      detail: rivalScore !== null
+        ? `3連写最高:${targetScore}% / 次点[${bestRivalCode}]:${rivalScore}% (差+${marginDiff}%)`
+        : `3連写最高:${targetScore}%`
+    };
+  }
+
+  // (C) 手持ちブレ救済：絶対閾値より少し低い（-5%以内）が、ライバル品に+3%以上の明確な差をつけて1位の場合に合格救済
+  const relativeGraceMin = Math.max(50, targetThreshold - 5);
+  if (rivalScore !== null && targetScore >= relativeGraceMin && marginDiff >= 3) {
+    return {
+      passed: true,
+      targetScore,
+      rivalCode: bestRivalCode,
+      rivalScore,
+      marginDiff,
+      detail: `相対1位合格 (3連写:${targetScore}% / 次点[${bestRivalCode}]:${rivalScore}% 差+${marginDiff}%)`
+    };
+  }
+
+  // (D) 閾値未達NG
+  const rivalInfoStr = rivalScore !== null
+    ? `\n・最も似ている他材料 [${bestRivalCode}]: ${rivalScore}%`
+    : '';
+  return {
+    passed: false,
+    targetScore,
+    rivalCode: bestRivalCode,
+    rivalScore,
+    reason: `類似度不足 (3連写最高: ${targetScore}% / 合格基準: ${targetThreshold}%以上)${rivalInfoStr}`
+  };
 }
 
 // =========================================================
@@ -347,9 +464,9 @@ function updateInspectStepUI(announceVoice = false) {
     if (announceVoice) speakText(`${step.name}のコードを枠に合わせて検査ボタンを押してください`);
   } else {
     const targetLabel = step.materialCode ? `${step.name}（材料: ${step.materialCode}）` : step.name;
-    banner.textContent = `👉 Step ${window.currentStepIdx + 1} / ${window.currentSteps.length} ：【 ${targetLabel} 】をカメラ全体に映して検査ボタンを押してください`;
+    banner.textContent = `👉 Step ${window.currentStepIdx + 1} / ${window.currentSteps.length} ：【 ${targetLabel} 】を映して検査ボタンを押してください（3連写＋他材料比較）`;
     bcBox.style.display = 'none';
-    btnExec.textContent = `🥐 【 ${targetLabel} 】パン屋AI検査を実行 (タップ / Space)`;
+    btnExec.textContent = `🥐 【 ${targetLabel} 】パン屋AI検査を実行 (3連写・相対判定)`;
     if (announceVoice) speakText(`${step.name}を置いて検査ボタンを押してください`);
   }
   drawInspectCanvas();
@@ -389,26 +506,31 @@ async function executeCurrentStepInspection() {
       }
       verifyStepBarcodeValue(codeObj.value, codeObj.isQr, step);
     } else {
+      btnExec.textContent = '📸 3連写＆他材料比較中... (そのままキープ)';
+      btnExec.disabled = true;
+
+      const materials = (await idbGet(MATERIAL_MASTER_KEY)) || {};
+      window.materialMastersCache = materials;
+
       let targetSamples = step.bakerySamples || [];
       let targetThreshold = step.bakeryThreshold || 80;
       let matTitle = step.name;
+      let resolvedMatKey = null;
 
       if (step.materialCode) {
-        const materials = (await idbGet(MATERIAL_MASTER_KEY)) || {};
-        window.materialMastersCache = materials;
-        const matKey = (typeof findMatchingMasterPart === 'function')
+        resolvedMatKey = (typeof findMatchingMasterPart === 'function')
           ? findMatchingMasterPart(step.materialCode, materials)
           : (materials[step.materialCode] ? step.materialCode : null);
 
-        if (matKey && materials[matKey]) {
-          const matObj = materials[matKey];
+        if (resolvedMatKey && materials[resolvedMatKey]) {
+          const matObj = materials[resolvedMatKey];
           if (matObj.bakerySamples && matObj.bakerySamples.length > 0) {
             targetSamples = matObj.bakerySamples;
           }
           if (!step.bakeryThreshold && matObj.bakeryThreshold) {
             targetThreshold = matObj.bakeryThreshold;
           }
-          matTitle = `${step.name} [材料:${matKey}]`;
+          matTitle = `${step.name} [材料:${resolvedMatKey}]`;
         } else if (!targetSamples || targetSamples.length === 0) {
           alert(`指定された材料マスター [ ${step.materialCode} ] が未登録です。\nホーム画面の「🥐 材料マスター登録」で登録してください。`);
           return;
@@ -420,17 +542,19 @@ async function executeCurrentStepInspection() {
         return;
       }
 
-      const feat = await extractBakeryFeatureVector(mainCanvas);
-      let bestSim = 0;
-      targetSamples.forEach(sample => {
-        const sim = computeCosineSimilarity(feat, sample) * 100;
-        if (sim > bestSim) bestSim = sim;
-      });
-      const score = Math.round(bestSim);
-      if (score >= targetThreshold) {
-        onCurrentStepPassed(`${matTitle} パン屋AI合格 (${score}%)`);
+      // ★ 案3（3連写手ブレ吸収）＋ 案1（ライバル材料比較）で判定 ★
+      const evalRes = await evaluateBakeryWithBurstAndRivals(
+        mainCanvas,
+        targetSamples,
+        targetThreshold,
+        resolvedMatKey,
+        materials
+      );
+
+      if (evalRes.passed) {
+        onCurrentStepPassed(`${matTitle} パン屋AI合格 (${evalRes.detail})`);
       } else {
-        onCurrentStepFailed(`【 ${matTitle} 】パン屋AI照合 NG\n類似度: ${score}% (合格基準: ${targetThreshold}%以上)`);
+        onCurrentStepFailed(`【 ${matTitle} 】パン屋AI照合 NG\n${evalRes.reason}`);
       }
     }
   } finally {
