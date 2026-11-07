@@ -1,5 +1,5 @@
 // =========================================================
-// ai_inspect.js : パン屋AI（材料マスター参照対応）・バーコード枠限定照合
+// ai_inspect.js : パン屋AI（常時カメラ全体枠固定）・バーコード中央枠限定照合
 // =========================================================
 window.currentInspectPart = '';
 window.currentSteps = [];
@@ -45,41 +45,21 @@ function loadQuaggaScript() {
   document.head.appendChild(s);
 }
 
-// ステップに材料マスターが紐づいている場合、材料マスター側の枠座標を優先解決する
-function resolveStepRoiSource(step) {
-  if (!step) return null;
-  if (step.type === 'BAKERY' && step.materialCode && window.materialMastersCache && window.materialMastersCache[step.materialCode]) {
-    const mat = window.materialMastersCache[step.materialCode];
-    if (step.isFullFrame && !mat.isFullFrame) {
-      return mat;
-    }
-  }
-  return step;
-}
-
+// ★ AIカメラ検査（BAKERY）は常にカメラ枠全体（100%）に固定 ★
+// （BARCODE検査のみ読み取り精度向上のため中央の横長枠に限定）
 function getScaledStepCoords(step, targetW, targetH) {
-  const roiSrc = resolveStepRoiSource(step);
-  if (!roiSrc || roiSrc.isFullFrame) {
-    if (step && step.type === 'BARCODE') {
-      const w = Math.round(targetW * 0.76);
-      const h = Math.round(targetH * 0.26);
-      return {
-        x: Math.round((targetW - w) / 2),
-        y: Math.round((targetH - h) / 2),
-        w: w,
-        h: h
-      };
-    }
-    return { x: 0, y: 0, w: targetW, h: targetH };
+  if (step && step.type === 'BARCODE') {
+    const w = Math.round(targetW * 0.76);
+    const h = Math.round(targetH * 0.26);
+    return {
+      x: Math.round((targetW - w) / 2),
+      y: Math.round((targetH - h) / 2),
+      w: w,
+      h: h
+    };
   }
-  const bw = roiSrc.baseW || 640;
-  const bh = roiSrc.baseH || 480;
-  return {
-    x: Math.round((roiSrc.x || 0) * (targetW / bw)),
-    y: Math.round((roiSrc.y || 0) * (targetH / bh)),
-    w: Math.round((roiSrc.w || bw) * (targetW / bw)),
-    h: Math.round((roiSrc.h || bh) * (targetH / bh))
-  };
+  // パン屋AI（および材料マスター撮影時）は常に画面全体
+  return { x: 0, y: 0, w: targetW, h: targetH };
 }
 
 // 画面描画フック
@@ -95,7 +75,7 @@ window.addEventListener('DOMContentLoaded', () => {
         ctx.fillRect(0, 0, canvasW, coords.y);
         ctx.fillRect(0, coords.y + coords.h, canvasW, canvasH - (coords.y + coords.h));
         ctx.fillRect(0, coords.y, coords.x, coords.h);
-        ctx.fillRect(0, coords.x + coords.w, coords.y, canvasW - (coords.x + coords.w), coords.h);
+        ctx.fillRect(coords.x + coords.w, coords.y, canvasW - (coords.x + coords.w), coords.h);
 
         const midY = coords.y + Math.round(coords.h / 2);
         ctx.strokeStyle = 'rgba(255, 23, 68, 0.85)';
@@ -106,18 +86,19 @@ window.addEventListener('DOMContentLoaded', () => {
         ctx.stroke();
       }
 
+      // 全体枠またはバーコード枠の描画
       ctx.strokeStyle = color;
-      ctx.lineWidth = 4;
-      ctx.strokeRect(coords.x, coords.y, coords.w, coords.h);
+      ctx.lineWidth = 6;
+      ctx.strokeRect(coords.x + 3, coords.y + 3, coords.w - 6, coords.h - 6);
 
       const matTag = (!isBarcode && step.materialCode) ? ` [材料:${step.materialCode}]` : '';
-      const labelText = `${labelPrefix}${step.name}${matTag} (${isBarcode ? '📷枠内に収めて検査ボタンを押す' : '🥐パン屋AI'})`;
+      const labelText = `${labelPrefix}${step.name}${matTag} (${isBarcode ? '📷枠内に収めて検査ボタンを押す' : '🥐パン屋AI・全体検査'})`;
       ctx.font = 'bold 15px sans-serif';
       const textWidth = ctx.measureText(labelText).width;
-      const boxW = Math.min(canvasW - 8, textWidth + 18);
+      const boxW = Math.min(canvasW - 12, textWidth + 18);
       const boxH = 26;
-      const boxX = Math.max(4, Math.min(coords.x, canvasW - boxW - 4));
-      const boxY = (coords.y - boxH < 4) ? (coords.y + 4) : (coords.y - boxH);
+      const boxX = isBarcode ? Math.max(4, Math.min(coords.x, canvasW - boxW - 4)) : 8;
+      const boxY = isBarcode ? ((coords.y - boxH < 4) ? (coords.y + 4) : (coords.y - boxH)) : (canvasH - boxH - 8);
 
       ctx.fillStyle = 'rgba(0, 0, 0, 0.82)';
       ctx.fillRect(boxX, boxY, boxW, boxH);
@@ -127,13 +108,13 @@ window.addEventListener('DOMContentLoaded', () => {
   }
 });
 
-async function extractBakeryFeatureVector(sourceCanvas, step) {
-  const coords = getScaledStepCoords(step, sourceCanvas.width, sourceCanvas.height);
+// パン屋AIの特徴抽出：常にキャンバス全体（0, 0, width, height）を対象にする
+async function extractBakeryFeatureVector(sourceCanvas) {
   reusableCropCanvas.width = 224;
   reusableCropCanvas.height = 224;
   reusableCropCtx.drawImage(
     sourceCanvas,
-    coords.x, coords.y, Math.max(16, coords.w), Math.max(16, coords.h),
+    0, 0, sourceCanvas.width, sourceCanvas.height,
     0, 0, 224, 224
   );
 
@@ -173,7 +154,7 @@ function computeCosineSimilarity(a, b) {
 }
 
 // =========================================================
-// 🎯 枠限定クロップ ＆ トリプルエンジン（BarcodeDetector + Quagga2 + ZXing）
+// 🎯 バーコード用クロップ ＆ トリプルエンジン（BarcodeDetector + Quagga2 + ZXing）
 // =========================================================
 function getFallbackScanner() {
   const el = document.getElementById('hiddenReaderFallback');
@@ -366,7 +347,7 @@ function updateInspectStepUI(announceVoice = false) {
     if (announceVoice) speakText(`${step.name}のコードを枠に合わせて検査ボタンを押してください`);
   } else {
     const targetLabel = step.materialCode ? `${step.name}（材料: ${step.materialCode}）` : step.name;
-    banner.textContent = `👉 Step ${window.currentStepIdx + 1} / ${window.currentSteps.length} ：【 ${targetLabel} 】を置いて検査ボタンを押してください`;
+    banner.textContent = `👉 Step ${window.currentStepIdx + 1} / ${window.currentSteps.length} ：【 ${targetLabel} 】をカメラ全体に映して検査ボタンを押してください`;
     bcBox.style.display = 'none';
     btnExec.textContent = `🥐 【 ${targetLabel} 】パン屋AI検査を実行 (タップ / Space)`;
     if (announceVoice) speakText(`${step.name}を置いて検査ボタンを押してください`);
@@ -386,7 +367,6 @@ function handleWorkerBarcodeInput() {
   verifyStepBarcodeValue(val, false, step);
 }
 
-// ★ パン屋AI照合実行：材料マスター(materialCode)が指定されていれば最新の材料マスターから特徴量を自動取得 ★
 async function executeCurrentStepInspection() {
   blurActiveInput();
   if (isInspectingStep || window.isChatteringCooldown) return;
@@ -409,7 +389,6 @@ async function executeCurrentStepInspection() {
       }
       verifyStepBarcodeValue(codeObj.value, codeObj.isQr, step);
     } else {
-      // 材料マスターの解決
       let targetSamples = step.bakerySamples || [];
       let targetThreshold = step.bakeryThreshold || 80;
       let matTitle = step.name;
@@ -441,7 +420,7 @@ async function executeCurrentStepInspection() {
         return;
       }
 
-      const feat = await extractBakeryFeatureVector(mainCanvas, step);
+      const feat = await extractBakeryFeatureVector(mainCanvas);
       let bestSim = 0;
       targetSamples.forEach(sample => {
         const sim = computeCosineSimilarity(feat, sample) * 100;
