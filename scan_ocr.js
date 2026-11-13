@@ -1,5 +1,5 @@
 // =========================================================
-// scan_ocr.js : 品番QR読取(動的枠同期版)・影除去＆枠可変OCR
+// scan_ocr.js : 品番QR読取・影除去＆枠可変OCR（括弧＆O/0・1/I同一視対応）
 // =========================================================
 let partQrScanner = null;
 let isPartQrLocked = false;
@@ -29,6 +29,7 @@ async function tryStartInspectionWithPart(partNo) {
   const cleaned = normalizeCodeString(partNo);
   const stored = (await idbGet(STORAGE_KEY)) || {};
 
+  // O(オー)と0(ゼロ)、1とIの同一視設定を考慮してマスタから正式品番を検索
   const matchedKey = (typeof findMatchingMasterPart === 'function')
     ? findMatchingMasterPart(cleaned, stored)
     : (stored[cleaned] ? cleaned : null);
@@ -50,7 +51,7 @@ async function tryStartInspectionWithPart(partNo) {
   updateInspectStepUI(true);
 }
 
-// ★ Androidでも白枠と認識範囲がズレず確実に読み取れる動的qrbox＋aspectRatio指定 ★
+// ★ 元の白いガイドライン設定（qrbox: { width: 250, height: 150 }）に完全復元 ★
 async function startPartQrScanner() {
   blurActiveInput();
   await stopPartScanCameras();
@@ -61,26 +62,13 @@ async function startPartQrScanner() {
   qrEl.style.display = 'block';
   document.getElementById('btnStopScanCam').style.display = 'inline-flex';
 
-  // 前回追加したカスタムオーバーレイが残っていれば非表示化
   const oldGuide = document.getElementById('partQrGuideOverlay');
-  if (oldGuide) oldGuide.style.display = 'none';
+  if (oldGuide) oldGuide.remove();
 
   partQrScanner = new Html5Qrcode('qrReaderPart');
-
-  const qrBoxFunction = function(viewfinderWidth, viewfinderHeight) {
-    const minEdge = Math.min(viewfinderWidth, viewfinderHeight);
-    const boxW = Math.max(160, Math.floor(minEdge * 0.78));
-    const boxH = Math.max(120, Math.floor(minEdge * 0.60));
-    return { width: boxW, height: boxH };
-  };
-
   partQrScanner.start(
     { facingMode: 'environment' },
-    {
-      fps: 15,
-      qrbox: qrBoxFunction,
-      aspectRatio: 1.333333
-    },
+    { fps: 15, qrbox: { width: 250, height: 150 } },
     (decodedText, decodedResult) => {
       if (isPartQrLocked) return;
       isPartQrLocked = true;
@@ -263,9 +251,6 @@ async function stopPartScanCameras() {
     } catch (e) {}
     partQrScanner = null;
   }
-  const guideOverlay = document.getElementById('partQrGuideOverlay');
-  if (guideOverlay) guideOverlay.style.display = 'none';
-
   document.getElementById('scanCamBox').style.display = 'none';
   document.getElementById('qrReaderPart').style.display = 'none';
   document.getElementById('partOcrVideo').style.display = 'none';
