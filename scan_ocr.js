@@ -1,5 +1,5 @@
 // =========================================================
-// scan_ocr.js : 品番QR読取・影除去＆枠可変OCR（括弧＆O/0同一視対応）
+// scan_ocr.js : 品番QR読取(対策③全体認識)・影除去＆枠可変OCR
 // =========================================================
 let partQrScanner = null;
 let isPartQrLocked = false;
@@ -29,7 +29,6 @@ async function tryStartInspectionWithPart(partNo) {
   const cleaned = normalizeCodeString(partNo);
   const stored = (await idbGet(STORAGE_KEY)) || {};
 
-  // O(オー)と0(ゼロ)同一視設定を考慮してマスタから正式品番を検索
   const matchedKey = (typeof findMatchingMasterPart === 'function')
     ? findMatchingMasterPart(cleaned, stored)
     : (stored[cleaned] ? cleaned : null);
@@ -51,6 +50,7 @@ async function tryStartInspectionWithPart(partNo) {
   updateInspectStepUI(true);
 }
 
+// ★ 対策③：qrboxによる内部切り抜き制限をなくし、カメラ全体で高速認識＋中央CSSガイド枠表示 ★
 async function startPartQrScanner() {
   blurActiveInput();
   await stopPartScanCameras();
@@ -61,10 +61,21 @@ async function startPartQrScanner() {
   qrEl.style.display = 'block';
   document.getElementById('btnStopScanCam').style.display = 'inline-flex';
 
+  // 中央ガイド枠がなければ生成して表示
+  let guideOverlay = document.getElementById('partQrGuideOverlay');
+  if (!guideOverlay) {
+    guideOverlay = document.createElement('div');
+    guideOverlay.id = 'partQrGuideOverlay';
+    guideOverlay.className = 'custom-qr-guide-overlay';
+    guideOverlay.innerHTML = '<span>画面内にQR / バーコードをかざしてください</span>';
+    box.appendChild(guideOverlay);
+  }
+  guideOverlay.style.display = 'flex';
+
   partQrScanner = new Html5Qrcode('qrReaderPart');
   partQrScanner.start(
     { facingMode: 'environment' },
-    { fps: 15, qrbox: { width: 250, height: 150 } },
+    { fps: 15 },
     (decodedText, decodedResult) => {
       if (isPartQrLocked) return;
       isPartQrLocked = true;
@@ -109,7 +120,6 @@ async function startPartOcrScanner() {
       document.getElementById('ocrRoiBadge').textContent = 'OCRエンジン初期化中...';
       tesseractWorker = await Tesseract.createWorker('eng');
       await tesseractWorker.setParameters({
-        // 括弧 ()[] も認識対象に含める
         tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_()[]',
         tessedit_pageseg_mode: '7'
       });
@@ -209,7 +219,6 @@ async function processOcrFrame(forceAccept) {
         const cleaned = normalizeCodeString(text).replace(/[^A-Za-z0-9_\-()\[\]]/g, '');
         if (cleaned.length >= 2) {
           const stored = (await idbGet(STORAGE_KEY)) || {};
-          // O(オー)と0(ゼロ)同一視設定を使って登録マスタを検索
           const matchedKey = (typeof findMatchingMasterPart === 'function')
             ? findMatchingMasterPart(cleaned, stored)
             : (stored[cleaned] ? cleaned : null);
@@ -249,6 +258,9 @@ async function stopPartScanCameras() {
     } catch (e) {}
     partQrScanner = null;
   }
+  const guideOverlay = document.getElementById('partQrGuideOverlay');
+  if (guideOverlay) guideOverlay.style.display = 'none';
+
   document.getElementById('scanCamBox').style.display = 'none';
   document.getElementById('qrReaderPart').style.display = 'none';
   document.getElementById('partOcrVideo').style.display = 'none';
