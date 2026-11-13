@@ -1,5 +1,5 @@
 // =========================================================
-// scan_ocr.js : 品番QR読取(対策③全体認識)・影除去＆枠可変OCR
+// scan_ocr.js : 品番QR読取(動的枠同期版)・影除去＆枠可変OCR
 // =========================================================
 let partQrScanner = null;
 let isPartQrLocked = false;
@@ -50,7 +50,7 @@ async function tryStartInspectionWithPart(partNo) {
   updateInspectStepUI(true);
 }
 
-// ★ 対策③：qrboxによる内部切り抜き制限をなくし、カメラ全体で高速認識＋中央CSSガイド枠表示 ★
+// ★ Androidでも白枠と認識範囲がズレず確実に読み取れる動的qrbox＋aspectRatio指定 ★
 async function startPartQrScanner() {
   blurActiveInput();
   await stopPartScanCameras();
@@ -61,21 +61,26 @@ async function startPartQrScanner() {
   qrEl.style.display = 'block';
   document.getElementById('btnStopScanCam').style.display = 'inline-flex';
 
-  // 中央ガイド枠がなければ生成して表示
-  let guideOverlay = document.getElementById('partQrGuideOverlay');
-  if (!guideOverlay) {
-    guideOverlay = document.createElement('div');
-    guideOverlay.id = 'partQrGuideOverlay';
-    guideOverlay.className = 'custom-qr-guide-overlay';
-    guideOverlay.innerHTML = '<span>画面内にQR / バーコードをかざしてください</span>';
-    box.appendChild(guideOverlay);
-  }
-  guideOverlay.style.display = 'flex';
+  // 前回追加したカスタムオーバーレイが残っていれば非表示化
+  const oldGuide = document.getElementById('partQrGuideOverlay');
+  if (oldGuide) oldGuide.style.display = 'none';
 
   partQrScanner = new Html5Qrcode('qrReaderPart');
+
+  const qrBoxFunction = function(viewfinderWidth, viewfinderHeight) {
+    const minEdge = Math.min(viewfinderWidth, viewfinderHeight);
+    const boxW = Math.max(160, Math.floor(minEdge * 0.78));
+    const boxH = Math.max(120, Math.floor(minEdge * 0.60));
+    return { width: boxW, height: boxH };
+  };
+
   partQrScanner.start(
     { facingMode: 'environment' },
-    { fps: 15 },
+    {
+      fps: 15,
+      qrbox: qrBoxFunction,
+      aspectRatio: 1.333333
+    },
     (decodedText, decodedResult) => {
       if (isPartQrLocked) return;
       isPartQrLocked = true;
