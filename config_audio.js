@@ -1,5 +1,5 @@
 // =========================================================
-// config_audio.js : 定数・IndexedDB・材料マスターキー・文字同一視・作業者QR・音声制御
+// config_audio.js : 定数・IndexedDB・材料マスターキー・文字同一視・作業者QR(対策③)・音声制御
 // =========================================================
 const DB_NAME = 'pokayoke_idb_v1';
 const DB_STORE = 'app_data';
@@ -180,7 +180,7 @@ function findMatchingMasterPart(rawPartNo, storedProfiles) {
 }
 
 // =========================================================
-// 👤 作業者ID管理（トップ画面復帰時リセット ＆ QRコード読取モーダル）
+// 👤 作業者ID管理（対策③：カメラ全体認識 ＆ 中央CSSガイド枠表示）
 // =========================================================
 function isWorkerRegistered() {
   const lbl = document.getElementById('lblWorker');
@@ -238,6 +238,45 @@ function injectWorkerModalUI() {
     workerInp.parentNode.appendChild(qrBtn);
   }
 
+  // Androidでもvideoが枠全体にフィットして歪まないようスタイルを注入
+  if (!document.getElementById('qrScannerFullFrameStyle')) {
+    const st = document.createElement('style');
+    st.id = 'qrScannerFullFrameStyle';
+    st.textContent = `
+      #workerQrReader video, #qrReaderPart video {
+        width: 100% !important;
+        height: 100% !important;
+        object-fit: cover !important;
+      }
+      .custom-qr-guide-overlay {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        width: 68%;
+        height: 68%;
+        border: 3px solid #00e676;
+        border-radius: 12px;
+        box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.35);
+        pointer-events: none;
+        z-index: 20;
+        display: flex;
+        align-items: flex-end;
+        justify-content: center;
+        padding-bottom: 6px;
+      }
+      .custom-qr-guide-overlay span {
+        background: rgba(0, 0, 0, 0.78);
+        color: #00e676;
+        font-size: 0.75rem;
+        font-weight: 700;
+        padding: 2px 8px;
+        border-radius: 4px;
+      }
+    `;
+    document.head.appendChild(st);
+  }
+
   if (!document.getElementById('workerAuthModal')) {
     const modal = document.createElement('div');
     modal.id = 'workerAuthModal';
@@ -259,8 +298,11 @@ function injectWorkerModalUI() {
           <button type="button" class="btn btn-danger" id="btnStopWorkerQrCam" style="display:none;" onclick="stopWorkerQrCamera()">⏹ カメラ停止</button>
         </div>
 
-        <div id="workerQrCamBox" style="display:none; width:100%; max-width:380px; margin:0 auto; aspect-ratio:4/3; background:#000; border-radius:8px; overflow:hidden;">
+        <div id="workerQrCamBox" style="position:relative; display:none; width:100%; max-width:380px; margin:0 auto; aspect-ratio:4/3; background:#000; border-radius:8px; overflow:hidden;">
           <div id="workerQrReader" style="width:100%; height:100%;"></div>
+          <div class="custom-qr-guide-overlay">
+            <span>画面内にQRコードをかざしてください</span>
+          </div>
         </div>
 
         <div style="display:flex; justify-content:flex-end; margin-top:4px;">
@@ -319,6 +361,7 @@ async function completeWorkerModalRegistration(workerCode) {
   }
 }
 
+// ★ 対策③：qrboxの固定切り抜き指定を廃止し、カメラ画面のどこに映ってもズレなく認識させる ★
 async function startWorkerQrCamera() {
   blurActiveInput();
   await stopWorkerQrCamera();
@@ -332,7 +375,7 @@ async function startWorkerQrCamera() {
   workerQrScanner = new Html5Qrcode('workerQrReader');
   workerQrScanner.start(
     { facingMode: 'environment' },
-    { fps: 15, qrbox: { width: 220, height: 150 } },
+    { fps: 15 },
     (decodedText) => {
       if (isWorkerQrLocked) return;
       const cleaned = String(decodedText || '').normalize('NFKC').trim();
