@@ -1,5 +1,5 @@
 // =========================================================
-// config_audio.js : 定数・IndexedDB・材料マスターキー・文字同一視・作業者QR(動的枠同期版)・音声制御
+// config_audio.js : 定数・IndexedDB・材料マスターキー・文字同一視・作業者QR・音声制御
 // =========================================================
 const DB_NAME = 'pokayoke_idb_v1';
 const DB_STORE = 'app_data';
@@ -180,7 +180,7 @@ function findMatchingMasterPart(rawPartNo, storedProfiles) {
 }
 
 // =========================================================
-// 👤 作業者ID管理（トップ画面復帰時リセット ＆ 動的比率QRスキャナ）
+// 👤 作業者ID管理（トップ画面復帰時リセット ＆ QRコード読取モーダル）
 // =========================================================
 function isWorkerRegistered() {
   const lbl = document.getElementById('lblWorker');
@@ -238,7 +238,7 @@ function injectWorkerModalUI() {
     workerInp.parentNode.appendChild(qrBtn);
   }
 
-  // 前回注入された干渉スタイルがあれば除去
+  // 不要な追加スタイルが残っていれば消去
   const oldStyle = document.getElementById('qrScannerFullFrameStyle');
   if (oldStyle) oldStyle.remove();
 
@@ -263,9 +263,8 @@ function injectWorkerModalUI() {
           <button type="button" class="btn btn-danger" id="btnStopWorkerQrCam" style="display:none;" onclick="stopWorkerQrCamera()">⏹ カメラ停止</button>
         </div>
 
-        <!-- 固定のaspect-ratioを外し、カメラ本来の比率とhtml5-qrcodeの枠計算を完全一致させる -->
-        <div id="workerQrCamBox" style="display:none; width:100%; max-width:380px; margin:0 auto; background:#000; border-radius:8px; overflow:hidden;">
-          <div id="workerQrReader" style="width:100%;"></div>
+        <div id="workerQrCamBox" style="display:none; width:100%; max-width:380px; margin:0 auto; aspect-ratio:4/3; background:#000; border-radius:8px; overflow:hidden;">
+          <div id="workerQrReader" style="width:100%; height:100%;"></div>
         </div>
 
         <div style="display:flex; justify-content:flex-end; margin-top:4px;">
@@ -324,7 +323,7 @@ async function completeWorkerModalRegistration(workerCode) {
   }
 }
 
-// ★ Androidでも白枠と実際の認識エリアが1ミリもズレず確実に読み取れる動的qrbox方式 ★
+// ★ 元の白いガイドライン設定（qrbox: { width: 220, height: 150 }）に完全復元 ★
 async function startWorkerQrCamera() {
   blurActiveInput();
   await stopWorkerQrCamera();
@@ -336,22 +335,9 @@ async function startWorkerQrCamera() {
   if (stopBtn) stopBtn.style.display = 'inline-flex';
 
   workerQrScanner = new Html5Qrcode('workerQrReader');
-
-  // 実際のカメラ表示幅・高さから動的に75%×60%の枠を計算（PC・Android共通でズレなし）
-  const qrBoxFunction = function(viewfinderWidth, viewfinderHeight) {
-    const minEdge = Math.min(viewfinderWidth, viewfinderHeight);
-    const boxW = Math.max(150, Math.floor(minEdge * 0.78));
-    const boxH = Math.max(120, Math.floor(minEdge * 0.65));
-    return { width: boxW, height: boxH };
-  };
-
   workerQrScanner.start(
     { facingMode: 'environment' },
-    {
-      fps: 15,
-      qrbox: qrBoxFunction,
-      aspectRatio: 1.333333
-    },
+    { fps: 15, qrbox: { width: 220, height: 150 } },
     (decodedText) => {
       if (isWorkerQrLocked) return;
       const cleaned = String(decodedText || '').normalize('NFKC').trim();
