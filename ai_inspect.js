@@ -1,5 +1,5 @@
 // =========================================================
-// ai_inspect.js : パン屋AI（3連写手ブレ吸収＋他材料ライバル相対比較）・バーコード照合
+// ai_inspect.js : パン屋AI(3連写+相対比較)・バーコード照合・OCR文字検査ステップ統合版
 // =========================================================
 window.currentInspectPart = '';
 window.currentSteps = [];
@@ -11,7 +11,7 @@ let fallbackHtml5Scanner = null;
 
 async function initAI() {
   const badge = document.getElementById('aiLiveBadge');
-  badge.textContent = 'AI・バーコードエンジン読込中...';
+  badge.textContent = 'AI・バーコード・OCRエンジン読込中...';
   badge.style.color = '#ffeb3b';
 
   loadQuaggaScript();
@@ -29,7 +29,7 @@ async function initAI() {
   try {
     await tf.ready();
     mobilenetModel = await mobilenet.load({ version: 2, alpha: 1.0 });
-    badge.textContent = '🥐 パン屋AI(3連写+相対判定) ＆ 🎯バーコード 準備完了';
+    badge.textContent = '🥐 パン屋AI ＆ 🎯バーコード ＆ 🔤OCR検査 準備完了';
     badge.style.color = '#00e676';
   } catch (e) {
     badge.textContent = '🥐 パン屋AI (高速特徴モード) 準備完了';
@@ -45,7 +45,10 @@ function loadQuaggaScript() {
   document.head.appendChild(s);
 }
 
-// AIカメラ検査（BAKERY）は常にカメラ枠全体（100%）に固定
+// 検査種別ごとの枠座標計算
+// ・BARCODE: 中央の横長枠 (76% x 26%)
+// ・OCR    : 設定画面のOCR初期値枠 (標準 75% x 14%)
+// ・BAKERY : カメラ枠全体 (100% 固定)
 function getScaledStepCoords(step, targetW, targetH) {
   if (step && step.type === 'BARCODE') {
     const w = Math.round(targetW * 0.76);
@@ -57,45 +60,64 @@ function getScaledStepCoords(step, targetW, targetH) {
       h: h
     };
   }
+  if (step && step.type === 'OCR') {
+    const wPct = (typeof ocrDefaultConfig !== 'undefined' && ocrDefaultConfig.width) ? ocrDefaultConfig.width : 75;
+    const hPct = (typeof ocrDefaultConfig !== 'undefined' && ocrDefaultConfig.height) ? ocrDefaultConfig.height : 14;
+    const w = Math.round(targetW * (wPct / 100));
+    const h = Math.round(targetH * (hPct / 100));
+    return {
+      x: Math.round((targetW - w) / 2),
+      y: Math.round((targetH - h) / 2),
+      w: w,
+      h: h
+    };
+  }
   return { x: 0, y: 0, w: targetW, h: targetH };
 }
 
-// 画面描画フック
+// 画面描画フック（BARCODE:緑枠+赤レーザー / OCR:水色枠+周囲マスク / BAKERY:紫全体枠）
 window.addEventListener('DOMContentLoaded', () => {
   if (typeof window.drawSmartRoiOverlay === 'function') {
     window.drawSmartRoiOverlay = function(ctx, canvasW, canvasH, step, labelPrefix) {
       const coords = getScaledStepCoords(step, canvasW, canvasH);
       const isBarcode = step.type === 'BARCODE';
-      const color = isBarcode ? '#00e676' : '#ab47bc';
+      const isOcr = step.type === 'OCR';
+      const color = isBarcode ? '#00e676' : (isOcr ? '#00e5ff' : '#ab47bc');
 
-      if (isBarcode) {
+      if (isBarcode || isOcr) {
         ctx.fillStyle = 'rgba(0, 0, 0, 0.48)';
         ctx.fillRect(0, 0, canvasW, coords.y);
         ctx.fillRect(0, coords.y + coords.h, canvasW, canvasH - (coords.y + coords.h));
         ctx.fillRect(0, coords.y, coords.x, coords.h);
         ctx.fillRect(coords.x + coords.w, coords.y, canvasW - (coords.x + coords.w), coords.h);
 
-        const midY = coords.y + Math.round(coords.h / 2);
-        ctx.strokeStyle = 'rgba(255, 23, 68, 0.85)';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(coords.x + 10, midY);
-        ctx.lineTo(coords.x + coords.w - 10, midY);
-        ctx.stroke();
+        if (isBarcode) {
+          const midY = coords.y + Math.round(coords.h / 2);
+          ctx.strokeStyle = 'rgba(255, 23, 68, 0.85)';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(coords.x + 10, midY);
+          ctx.lineTo(coords.x + coords.w - 10, midY);
+          ctx.stroke();
+        }
       }
 
       ctx.strokeStyle = color;
-      ctx.lineWidth = 6;
-      ctx.strokeRect(coords.x + 3, coords.y + 3, coords.w - 6, coords.h - 6);
+      ctx.lineWidth = 5;
+      ctx.strokeRect(coords.x + 2, coords.y + 2, coords.w - 4, coords.h - 4);
 
-      const matTag = (!isBarcode && step.materialCode) ? ` [材料:${step.materialCode}]` : '';
-      const labelText = `${labelPrefix}${step.name}${matTag} (${isBarcode ? '📷枠内に収めて検査ボタンを押す' : '🥐3連写＋ライバル比較AI'})`;
+      let modeDesc = '🥐3連写＋ライバル比較AI';
+      if (isBarcode) modeDesc = '📷枠内に収めて検査ボタンを押す';
+      else if (isOcr) modeDesc = `🔤文字(OCR)照合 [正解:${step.expectedOcrText || '未設定'}]`;
+
+      const matTag = (!isBarcode && !isOcr && step.materialCode) ? ` [材料:${step.materialCode}]` : '';
+      const labelText = `${labelPrefix}${step.name}${matTag} (${modeDesc})`;
       ctx.font = 'bold 15px sans-serif';
       const textWidth = ctx.measureText(labelText).width;
       const boxW = Math.min(canvasW - 12, textWidth + 18);
       const boxH = 26;
-      const boxX = isBarcode ? Math.max(4, Math.min(coords.x, canvasW - boxW - 4)) : 8;
-      const boxY = isBarcode ? ((coords.y - boxH < 4) ? (coords.y + 4) : (coords.y - boxH)) : (canvasH - boxH - 8);
+      const boxX = (isBarcode || isOcr) ? Math.max(4, Math.min(coords.x, canvasW - boxW - 4)) : 8;
+      const boxY = (isBarcode || isOcr) ? ((coords.y - boxH < 4) ? (coords.y + 4) : (coords.y - boxH)) : (canvasH - boxH - 8);
 
       ctx.fillStyle = 'rgba(0, 0, 0, 0.82)';
       ctx.fillRect(boxX, boxY, boxW, boxH);
@@ -105,7 +127,6 @@ window.addEventListener('DOMContentLoaded', () => {
   }
 });
 
-// パン屋AIの特徴抽出：常にキャンバス全体（0, 0, width, height）を対象にする
 async function extractBakeryFeatureVector(sourceCanvas) {
   reusableCropCanvas.width = 224;
   reusableCropCanvas.height = 224;
@@ -151,17 +172,16 @@ function computeCosineSimilarity(a, b) {
 }
 
 // =========================================================
-// 🚀 案3（3連写ブレ吸収）＋ 案1（他材料マスターとの相対比較）統合判定エンジン
+// 🚀 パン屋AI：3連写ブレ吸収 ＋ 他材料マスターとの相対比較エンジン
 // =========================================================
 async function evaluateBakeryWithBurstAndRivals(sourceCanvas, targetSamples, targetThreshold, targetMatKey, allMaterialsMap) {
-  const burstCount = 3;      // 3連写
-  const burstDelayMs = 140;  // 0.14秒間隔（計約0.3秒）
+  const burstCount = 3;
+  const burstDelayMs = 140;
   const videoEl = document.getElementById('videoSource');
 
   let bestTargetSim = -1;
   let bestFrameFeat = null;
 
-  // 1. 【案3】3連写して手ブレの少ない（正解材料との一致率が最も高い）ベストフレームを選出
   for (let b = 0; b < burstCount; b++) {
     if (b > 0) {
       await new Promise(r => setTimeout(r, burstDelayMs));
@@ -184,7 +204,6 @@ async function evaluateBakeryWithBurstAndRivals(sourceCanvas, targetSamples, tar
 
   const targetScore = Math.round(bestTargetSim);
 
-  // 2. 【案1】他の登録済み材料マスター（ライバル品）すべてと同時比較
   let bestRivalCode = null;
   let bestRivalMemo = '';
   let bestRivalSim = -1;
@@ -193,7 +212,6 @@ async function evaluateBakeryWithBurstAndRivals(sourceCanvas, targetSamples, tar
     const matKeys = Object.keys(allMaterialsMap);
     for (let i = 0; i < matKeys.length; i++) {
       const k = matKeys[i];
-      // 自分自身の材料マスターはスキップ
       if (targetMatKey && normalizeCodeString(k) === normalizeCodeString(targetMatKey)) continue;
 
       const rivalMat = allMaterialsMap[k];
@@ -216,8 +234,6 @@ async function evaluateBakeryWithBurstAndRivals(sourceCanvas, targetSamples, tar
   const rivalScore = bestRivalCode ? Math.round(bestRivalSim) : null;
   const marginDiff = rivalScore !== null ? (targetScore - rivalScore) : null;
 
-  // 3. 総合合否判定ロジック
-  // (A) ライバル品の方がスコアが高い（または同点）場合は、仮に閾値を超えていても「類似異品」として確実にNGにする
   if (rivalScore !== null && rivalScore >= targetScore) {
     const rivalLabel = bestRivalMemo ? `${bestRivalCode} (${bestRivalMemo})` : bestRivalCode;
     return {
@@ -230,7 +246,6 @@ async function evaluateBakeryWithBurstAndRivals(sourceCanvas, targetSamples, tar
     };
   }
 
-  // (B) 通常の絶対閾値クリア（かつライバル品にも勝っている）
   if (targetScore >= targetThreshold) {
     return {
       passed: true,
@@ -244,7 +259,6 @@ async function evaluateBakeryWithBurstAndRivals(sourceCanvas, targetSamples, tar
     };
   }
 
-  // (C) 手持ちブレ救済：絶対閾値より少し低い（-5%以内）が、ライバル品に+3%以上の明確な差をつけて1位の場合に合格救済
   const relativeGraceMin = Math.max(50, targetThreshold - 5);
   if (rivalScore !== null && targetScore >= relativeGraceMin && marginDiff >= 3) {
     return {
@@ -257,7 +271,6 @@ async function evaluateBakeryWithBurstAndRivals(sourceCanvas, targetSamples, tar
     };
   }
 
-  // (D) 閾値未達NG
   const rivalInfoStr = rivalScore !== null
     ? `\n・最も似ている他材料 [${bestRivalCode}]: ${rivalScore}%`
     : '';
@@ -271,7 +284,53 @@ async function evaluateBakeryWithBurstAndRivals(sourceCanvas, targetSamples, tar
 }
 
 // =========================================================
-// 🎯 バーコード用クロップ ＆ トリプルエンジン（BarcodeDetector + Quagga2 + ZXing）
+// 🔤 ステップOCR文字照合エンジン（大文字小文字・O/0・1/I同一視対応）
+// =========================================================
+function isOcrTextMatching(scannedRaw, expectedRaw, matchMode = 'EXACT') {
+  const sNorm = normalizeCodeString(scannedRaw);
+  const eNorm = normalizeCodeString(expectedRaw);
+  if (!sNorm || !eNorm) return false;
+
+  const sUni = (typeof unifyAmbiguousCharsKey === 'function') ? unifyAmbiguousCharsKey(sNorm) : sNorm;
+  const eUni = (typeof unifyAmbiguousCharsKey === 'function') ? unifyAmbiguousCharsKey(eNorm) : eNorm;
+
+  if (matchMode === 'CONTAINS') {
+    return sNorm.includes(eNorm) || sUni.includes(eUni);
+  }
+  return sNorm === eNorm || sUni === eUni;
+}
+
+// 検査ボタン押下時に最大4フレーム（約0.8秒）OCR読取を試行し、手ブレによる読み오りを防ぐ
+async function detectStepOcrFromCanvas(sourceCanvas, step) {
+  const videoEl = document.getElementById('videoSource');
+  const coords = getScaledStepCoords(step, sourceCanvas.width, sourceCanvas.height);
+  const expected = normalizeCodeString(step.expectedOcrText || '');
+  const matchMode = step.ocrMatchMode || 'EXACT';
+
+  let lastReadText = '';
+
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if (attempt > 0) {
+      await new Promise(r => setTimeout(r, 200));
+      if (videoEl && isCamRunning && videoEl.readyState >= 2) {
+        sourceCanvas.getContext('2d').drawImage(videoEl, 0, 0, sourceCanvas.width, sourceCanvas.height);
+      }
+    }
+    if (typeof recognizeOcrFromCanvasRect === 'function') {
+      const readStr = await recognizeOcrFromCanvasRect(sourceCanvas, coords.x, coords.y, coords.w, coords.h);
+      if (readStr) {
+        lastReadText = readStr;
+        if (expected && isOcrTextMatching(readStr, expected, matchMode)) {
+          return { matched: true, text: readStr };
+        }
+      }
+    }
+  }
+  return { matched: false, text: lastReadText };
+}
+
+// =========================================================
+// 🎯 バーコード用クロップ ＆ トリプルエンジン
 // =========================================================
 function getFallbackScanner() {
   const el = document.getElementById('hiddenReaderFallback');
@@ -448,7 +507,7 @@ function updateInspectStepUI(announceVoice = false) {
   const bar = document.getElementById('stepIndicatorBar');
   bar.innerHTML = window.currentSteps.map((s, idx) => {
     const cls = idx < window.currentStepIdx ? 'done' : (idx === window.currentStepIdx ? 'active' : '');
-    const ic = s.type === 'BAKERY' ? '🥐' : '📷';
+    const ic = s.type === 'BAKERY' ? '🥐' : (s.type === 'OCR' ? '🔤' : '📷');
     const matInfo = (s.type === 'BAKERY' && s.materialCode) ? `(${s.materialCode})` : '';
     return `<span class="step-chip ${cls}">${idx + 1}. ${ic} ${s.name}${matInfo}</span>`;
   }).join('');
@@ -462,6 +521,11 @@ function updateInspectStepUI(announceVoice = false) {
     bcBox.style.display = 'block';
     btnExec.textContent = `🔍 カメラで【 ${step.name} 】のコードを読取・照合 (タップ / Space)`;
     if (announceVoice) speakText(`${step.name}のコードを枠に合わせて検査ボタンを押してください`);
+  } else if (step.type === 'OCR') {
+    banner.textContent = `👉 Step ${window.currentStepIdx + 1} / ${window.currentSteps.length} ：水色の枠に【 ${step.name} 】の文字（${step.expectedOcrText || ''}）を収めて検査ボタンを押してください`;
+    bcBox.style.display = 'block';
+    btnExec.textContent = `🔤 カメラで【 ${step.name} 】の文字(OCR)を読取・照合 (タップ / Space)`;
+    if (announceVoice) speakText(`${step.name}の文字を枠に合わせて検査ボタンを押してください`);
   } else {
     const targetLabel = step.materialCode ? `${step.name}（材料: ${step.materialCode}）` : step.name;
     banner.textContent = `👉 Step ${window.currentStepIdx + 1} / ${window.currentSteps.length} ：【 ${targetLabel} 】を映して検査ボタンを押してください（3連写＋他材料比較）`;
@@ -480,8 +544,12 @@ function handleWorkerBarcodeInput() {
   inp.value = '';
   if (!val) return;
   const step = window.currentSteps[window.currentStepIdx];
-  if (!step || step.type !== 'BARCODE') return;
-  verifyStepBarcodeValue(val, false, step);
+  if (!step) return;
+  if (step.type === 'BARCODE') {
+    verifyStepBarcodeValue(val, false, step);
+  } else if (step.type === 'OCR') {
+    verifyStepOcrValue(val, step);
+  }
 }
 
 async function executeCurrentStepInspection() {
@@ -505,6 +573,22 @@ async function executeCurrentStepInspection() {
         return;
       }
       verifyStepBarcodeValue(codeObj.value, codeObj.isQr, step);
+    } else if (step.type === 'OCR') {
+      // ★ OCR文字照合ステップの実行 ★
+      const expected = normalizeCodeString(step.expectedOcrText || '');
+      if (!expected) {
+        alert('このOCRステップには「正解文字列」が設定されていません。設定画面で登録してください。');
+        return;
+      }
+      btnExec.textContent = '🔤 枠内の文字(OCR)を解析中... (そのままキープ)';
+      btnExec.disabled = true;
+
+      const ocrRes = await detectStepOcrFromCanvas(mainCanvas, step);
+      if (!ocrRes.text) {
+        alert('水色の枠内から文字を読み取れませんでした。\n文字が枠の中央にピント良く収まるようにかざして、もう一度検査ボタンを押してください。');
+        return;
+      }
+      verifyStepOcrValue(ocrRes.text, step);
     } else {
       btnExec.textContent = '📸 3連写＆他材料比較中... (そのままキープ)';
       btnExec.disabled = true;
@@ -542,7 +626,6 @@ async function executeCurrentStepInspection() {
         return;
       }
 
-      // ★ 案3（3連写手ブレ吸収）＋ 案1（ライバル材料比較）で判定 ★
       const evalRes = await evaluateBakeryWithBurstAndRivals(
         mainCanvas,
         targetSamples,
@@ -580,6 +663,25 @@ function verifyStepBarcodeValue(rawScanned, isQr, step) {
     onCurrentStepPassed(`${step.name}コード一致 (${actual})`);
   } else {
     onCurrentStepFailed(`【 ${step.name} 】コード不一致！\n読取値: ${actual}\n正解値: ${expected}`);
+  }
+}
+
+// ★ OCR文字照合の合否判定（O/0、1/I同一視ルール対応） ★
+function verifyStepOcrValue(rawReadText, step) {
+  const expected = normalizeCodeString(step.expectedOcrText || '');
+  const actual = normalizeCodeString(rawReadText || '');
+  const matchMode = step.ocrMatchMode || 'EXACT';
+
+  if (!actual) return;
+
+  if (isOcrTextMatching(actual, expected, matchMode)) {
+    onCurrentStepPassed(`${step.name} OCR文字一致 (読取:${actual} / 正解:${expected})`);
+  } else {
+    onCurrentStepFailed(
+      `【 ${step.name} 】OCR文字不一致！\n` +
+      `・OCR読取文字: ${actual}\n` +
+      `・正解文字列 : ${expected} (${matchMode === 'CONTAINS' ? '部分一致' : '完全一致'})`
+    );
   }
 }
 
@@ -645,7 +747,7 @@ function startChatteringCooldown(sec) {
       inp.disabled = false;
       banner.classList.remove('cooldown');
       banner.textContent = targetMsg;
-      if (window.currentSteps[window.currentStepIdx]?.type === 'BARCODE') {
+      if (['BARCODE', 'OCR'].includes(window.currentSteps[window.currentStepIdx]?.type)) {
         inp.value = '';
       }
     } else {
