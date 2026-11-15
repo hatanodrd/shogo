@@ -38,188 +38,7 @@ let ocrDefaultConfig = {
   shadow: 14
 };
 
-// ★ パン屋AI 半透明シルエット（ゴーストガイド）設定（ON/OFF・透明度%） ★
-let ghostGuideConfig = {
-  enabled: true,
-  opacity: 35
-};
-
-// 音声・ブザー設定
-let isSpeechEnabled = true;
-let audioConfig = {
-  voiceURI: '',
-  rate: 1.15,
-  pitch: 1.0,
-  volume: 1.0,
-  buzzerPreset: 'STANDARD'
-};
-let availableVoices = [];
-
-let isTorchOn = false;
-let countOK = 0;
-let countNG = 0;
-
-let mobilenetModel = null;
-let sharedBarcodeDetector = null;
-if ('BarcodeDetector' in window) {
-  try {
-    sharedBarcodeDetector = new BarcodeDetector({
-      formats: ['qr_code', 'ean_13', 'ean_8', 'code_128', 'code_39', 'itf', 'codabar', 'upc_a', 'upc_e']
-    });
-  } catch (e) {}
-}
-const reusableCropCanvas = document.createElement('canvas');
-const reusableCropCtx = reusableCropCanvas.getContext('2d', { willReadFrequently: true });
-
-let activePage = 'topMenuPage';
-let camStream = null;
-let isCamRunning = false;
-
-// 作業者QRスキャナ制御用
-let workerQrScanner = null;
-let isWorkerQrLocked = false;
-let pendingNavigatePageAfterWorker = null;
-
-// =========================================================
-// 🗄️ IndexedDB 非同期ラッパー（容量無制限ストレージ）
-// =========================================================
-function openAppDatabase() {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1);
-    req.onupgradeneeded = (e) => {
-      const db = e.target.result;
-      if (!db.objectStoreNames.contains(DB_STORE)) {
-        db.createObjectStore(DB_STORE);
-      }
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-async function idbGet(key) {
-  const db = await openAppDatabase();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(DB_STORE, 'readonly');
-    const store = tx.objectStore(DB_STORE);
-    const req = store.get(key);
-    req.onsuccess = () => {
-      let res = req.result !== undefined ? req.result : null;
-      if ((key === STORAGE_KEY || key === MATERIAL_MASTER_KEY) && res && typeof res === 'object' && isIgnoreCase) {
-        const clone = Object.assign({}, res);
-        Object.keys(res).forEach(k => {
-          const upKey = String(k).normalize('NFKC').trim().toUpperCase();
-          if (!clone[upKey]) clone[upKey] = res[k];
-        });
-        return resolve(clone);
-      }
-      resolve(res);
-    };
-    req.onerror = () => reject(req.error);
-  });
-}
-
-async function idbSet(key, val) {
-  const db = await openAppDatabase();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(DB_STORE, 'readwrite');
-    const store = tx.objectStore(DB_STORE);
-    const req = store.put(val, key);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-  });
-}
-
-async function idbDelete(key) {
-  const db = await openAppDatabase();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(DB_STORE, 'readwrite');
-    const store = tx.objectStore(DB_STORE);
-    const req = store.delete(key);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-  });
-}
-
-function blurActiveInput() {
-  if (document.activeElement && ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName)) {
-    document.activeElement.blur();
-  }
-}
-
-// =========================================================
-// 🔤 文字列正規化 ＆ O/0 および 1/I あいまい一致解決
-// =========================================================
-function normalizeCodeString(str) {
-  if (!str) return '';
-  const cleaned = String(str).normalize('NFKC').trim();
-  return isIgnoreCase**半透明シルエット（ゴーストガイド）重ね表示機能**を追加しました。また、ご要望通り**設定画面でのON/OFF切り替え**に加え、**シルエットの透明度（濃さ：10%〜75%）を設定画面のスライダーで自由に変更・保存できる機能**もあわせて実装しています。
-
-今回も既存のHTMLやCSSには手を加えず、関連する **3つのJavaScriptモジュール**（`config_audio.js`、`ai_inspect.js`、`app_admin.js`）のみを上書き保存するだけで動作します（残りの4ファイルは変更不要です）。
-
----
-
-### ✨ 追加した「👻 半透明シルエット（ゴーストガイド）」の仕様
-
-1. **設定画面（⚙️）でのON/OFF切り替え ＆ 透明度スライダー**
-   * 設定画面の「③ システム共通・読取ルール設定」内に、**「👻 パン屋AIの半透明シルエット（ゴーストガイド）設定」** ブロックを追加しました。
-   * **ON / OFFボタン**：ワンタップでシルエット表示の有効・無効を切り替えられます（初期値：ON）。
-   * **💧 シルエットの不透明度（濃さ）スライダー**：**10%（ごく薄い）〜 75%（濃い）** の範囲（初期値：35%）で自由に調整・保存でき、JSONバックアップにも自動で連動します。
-2. **材料マスター登録時の「シルエットガイド画像」自動生成・保存**
-   * 材料マスター登録画面（🥐）で1枚目の「📸 良品マスターとして追加」を押した際、特徴ベクトルと同時に**軽量なガイド画像（320×240 JPEG）**を自動生成してIndexedDBに保存します。
-   * 既存の材料マスターに対しても、**「👻 現在の映像でシルエット画像のみ更新」** ボタンでいつでも好きな角度のガイド画像に差し替え可能です。
-3. **検査時のリアルタイム重ね合わせ ＆ 撮影瞬間の自動クリア（重要）**
-   * 作業者が検査する際（および材料マスター画面のプレビュー時）、カメラ映像の上に**設定した透明度で良品シルエットがぴったり重なって表示**されます。作業者は手持ちスマホでも「シルエットと重なる距離・向き」に合わせるだけで、毎回安定した高スコアを出せるようになります。
-   * **AI判定への干渉防止**：「検査ボタン」を押して3連写で特徴量を抽出する瞬間は、裏側でシルエットを含まない**純粋なカメラ映像（生フレーム）のみ**をAIに渡すため、シルエット画像自体がAIの判定スコアに悪影響を与えることはありません。
-
----
-
-## 🔊 1. config_audio.js（シルエットON/OFF ＆ 透明度スライダー設定 追加版）
-
-お手元の **`config_audio.js`** を以下のコードで上書き保存してください。
-
-```javascript
-// =========================================================
-// config_audio.js : 定数・IndexedDB・文字同一視・半透明シルエット設定・作業者QR・音声制御
-// =========================================================
-const DB_NAME = 'pokayoke_idb_v1';
-const DB_STORE = 'app_data';
-
-const STORAGE_KEY = 'pokayoke_step_profiles_v5';
-const MATERIAL_MASTER_KEY = 'pokayoke_material_masters_v5';
-const TABLE_A_KEY = 'pokayoke_csv_table_a_v5';
-const TABLE_B_KEY = 'pokayoke_csv_table_b_v5';
-const QR_CONFIG_KEY = 'pokayoke_qr_range_config_v5';
-const CASE_CONFIG_KEY = 'pokayoke_ignore_case_v5';
-const OZERO_CONFIG_KEY = 'pokayoke_ignore_ozero_v5';
-const ONE_I_CONFIG_KEY = 'pokayoke_ignore_one_i_v5';
-const OCR_CONFIG_KEY = 'pokayoke_ocr_default_config_v5';
-const GHOST_CONFIG_KEY = 'pokayoke_ghost_guide_config_v5';
-const AUDIO_CONFIG_KEY = 'pokayoke_audio_config_v5';
-const LOG_STORAGE_KEY = 'pokayoke_inspection_logs_v5';
-const BOX_NAMES = ['外箱', '内箱', '小箱'];
-
-let csvTableA = {};
-let csvTableB = {};
-let qrRangeConfig = { start: null, end: null };
-
-// 大文字・小文字を無視するかどうかの設定（初期値: true = 区別しない）
-let isIgnoreCase = true;
-
-// OCRで「O（オー）」と「0（ゼロ）」を同一視するかどうかの設定（初期値: true = 区別しない）
-let isIgnoreOandZero = true;
-
-// OCRで「1（イチ）」と「I（アイ）/ l（エル）」を同一視するかどうかの設定（初期値: true = 区別しない）
-let isIgnoreOneAndI = true;
-
-// OCR初期値設定（横幅・高さ・影除去感度）
-let ocrDefaultConfig = {
-  width: 75,
-  height: 14,
-  shadow: 14
-};
-
-// ★ パン屋AI 半透明シルエット（ゴーストガイド）設定（ON/OFF・不透明度%） ★
+// パン屋AI 半透明シルエット（ゴーストガイド）設定（ON/OFF・不透明度%）
 let ghostGuideConfig = {
   enabled: true,
   opacity: 35
@@ -608,7 +427,6 @@ function injectCustomAdminSettingsUI() {
     card.appendChild(oneIRow);
   }
 
-  // ★ 新設：パン屋AI 半透明シルエット（ゴーストガイド）のON/OFF ＆ 透明度スライダー ★
   if (!document.getElementById('ghostGuideSettingRow')) {
     const ghostRow = document.createElement('div');
     ghostRow.id = 'ghostGuideSettingRow';
@@ -734,7 +552,6 @@ function toggleIgnoreOneISetting() {
   updateIgnoreOneIUI();
 }
 
-// ★ 半透明シルエット設定のUI反映・切り替え関数 ★
 function updateGhostGuideUI() {
   const btn = document.getElementById('btnToggleGhostGuide');
   const rng = document.getElementById('rngAdminGhostOpacity');
