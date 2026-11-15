@@ -14,6 +14,7 @@ const ghostImageObjCache = {};
 
 async function initAI() {
   const badge = document.getElementById('aiLiveBadge');
+  if (!badge) return;
   badge.textContent = 'AI・バーコード・OCRエンジン読込中...';
   badge.style.color = '#ffeb3b';
 
@@ -43,7 +44,7 @@ async function initAI() {
 function loadQuaggaScript() {
   if (typeof Quagga !== 'undefined') return;
   const s = document.createElement('script');
-  s.src = '[https://cdn.jsdelivr.net/npm/@ericblade/quagga2@1.8.4/dist/quagga.min.js](https://cdn.jsdelivr.net/npm/@ericblade/quagga2@1.8.4/dist/quagga.min.js)';
+  s.src = 'https://cdn.jsdelivr.net/npm/@ericblade/quagga2@1.8.4/dist/quagga.min.js';
   s.async = true;
   document.head.appendChild(s);
 }
@@ -51,7 +52,6 @@ function loadQuaggaScript() {
 // =========================================================
 // 👻 半透明シルエット（ゴーストガイド）画像の生成 ＆ 描画ヘルパー
 // =========================================================
-// カメラの生映像から軽量なシルエット用JPEG（320x240）を生成
 function captureGhostImageDataUrl(sourceCanvas) {
   const videoEl = document.getElementById('videoSource');
   const src = (videoEl && isCamRunning && videoEl.readyState >= 2) ? videoEl : sourceCanvas;
@@ -63,7 +63,6 @@ function captureGhostImageDataUrl(sourceCanvas) {
   return gCanvas.toDataURL('image/jpeg', 0.72);
 }
 
-// ステップまたは材料マスターからシルエット画像のDataURLを取得
 function resolveStepGhostDataUrl(step) {
   if (!step || step.type !== 'BAKERY') return null;
   if (step.ghostImage) return step.ghostImage;
@@ -115,76 +114,73 @@ function getScaledStepCoords(step, targetW, targetH) {
   return { x: 0, y: 0, w: targetW, h: targetH };
 }
 
-// 画面描画フック（👻半透明シルエット重ね表示 ＋ 枠描画）
-window.addEventListener('DOMContentLoaded', () => {
-  if (typeof window.drawSmartRoiOverlay === 'function') {
-    window.drawSmartRoiOverlay = function(ctx, canvasW, canvasH, step, labelPrefix) {
-      const coords = getScaledStepCoords(step, canvasW, canvasH);
-      const isBarcode = step.type === 'BARCODE';
-      const isOcr = step.type === 'OCR';
-      const isBakery = step.type === 'BAKERY';
-      const color = isBarcode ? '#00e676' : (isOcr ? '#00e5ff' : '#ab47bc');
+// ★ 全画面共通の枠・半透明シルエット描画関数（app_admin.jsでの重複上書きを廃止し直接定義） ★
+function drawSmartRoiOverlay(ctx, canvasW, canvasH, step, labelPrefix) {
+  if (!step) return;
+  const coords = getScaledStepCoords(step, canvasW, canvasH);
+  const isBarcode = step.type === 'BARCODE';
+  const isOcr = step.type === 'OCR';
+  const isBakery = step.type === 'BAKERY';
+  const color = isBarcode ? '#00e676' : (isOcr ? '#00e5ff' : '#ab47bc');
 
-      // ★ パン屋AI検査時、設定で半透明シルエットがONならカメラ画面上に重ねて描画 ★
-      let isGhostDrawn = false;
-      if (isBakery && typeof ghostGuideConfig !== 'undefined' && ghostGuideConfig.enabled) {
-        const ghostUrl = resolveStepGhostDataUrl(step);
-        const ghostImg = getCachedGhostImageElement(ghostUrl);
-        if (ghostImg && ghostImg.complete && ghostImg.naturalWidth > 0) {
-          ctx.save();
-          ctx.globalAlpha = Math.max(0.1, Math.min(0.75, (ghostGuideConfig.opacity || 35) / 100));
-          ctx.drawImage(ghostImg, 0, 0, canvasW, canvasH);
-          ctx.restore();
-          isGhostDrawn = true;
-        }
-      }
-
-      if (isBarcode || isOcr) {
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.48)';
-        ctx.fillRect(0, 0, canvasW, coords.y);
-        ctx.fillRect(0, coords.y + coords.h, canvasW, canvasH - (coords.y + coords.h));
-        ctx.fillRect(0, coords.y, coords.x, coords.h);
-        ctx.fillRect(coords.x + coords.w, coords.y, canvasW - (coords.x + coords.w), coords.h);
-
-        if (isBarcode) {
-          const midY = coords.y + Math.round(coords.h / 2);
-          ctx.strokeStyle = 'rgba(255, 23, 68, 0.85)';
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.moveTo(coords.x + 10, midY);
-          ctx.lineTo(coords.x + coords.w - 10, midY);
-          ctx.stroke();
-        }
-      }
-
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 5;
-      ctx.strokeRect(coords.x + 2, coords.y + 2, coords.w - 4, coords.h - 4);
-
-      let modeDesc = isGhostDrawn
-        ? `👻シルエット(${ghostGuideConfig.opacity}%)に合わせて撮影`
-        : '🥐3連写＋ライバル比較AI';
-      if (isBarcode) modeDesc = '📷枠内に収めて検査ボタンを押す';
-      else if (isOcr) modeDesc = `🔤文字(OCR)照合 [正解:${step.expectedOcrText || '未設定'}]`;
-
-      const matTag = (!isBarcode && !isOcr && step.materialCode) ? ` [材料:${step.materialCode}]` : '';
-      const labelText = `${labelPrefix}${step.name}${matTag} (${modeDesc})`;
-      ctx.font = 'bold 15px sans-serif';
-      const textWidth = ctx.measureText(labelText).width;
-      const boxW = Math.min(canvasW - 12, textWidth + 18);
-      const boxH = 26;
-      const boxX = (isBarcode || isOcr) ? Math.max(4, Math.min(coords.x, canvasW - boxW - 4)) : 8;
-      const boxY = (isBarcode || isOcr) ? ((coords.y - boxH < 4) ? (coords.y + 4) : (coords.y - boxH)) : (canvasH - boxH - 8);
-
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.82)';
-      ctx.fillRect(boxX, boxY, boxW, boxH);
-      ctx.fillStyle = color;
-      ctx.fillText(labelText, boxX + 8, boxY + 18);
-    };
+  // パン屋AI検査時、設定で半透明シルエットがONならカメラ画面上に重ねて描画
+  let isGhostDrawn = false;
+  if (isBakery && typeof ghostGuideConfig !== 'undefined' && ghostGuideConfig.enabled) {
+    const ghostUrl = resolveStepGhostDataUrl(step);
+    const ghostImg = getCachedGhostImageElement(ghostUrl);
+    if (ghostImg && ghostImg.complete && ghostImg.naturalWidth > 0) {
+      ctx.save();
+      ctx.globalAlpha = Math.max(0.1, Math.min(0.75, (ghostGuideConfig.opacity || 35) / 100));
+      ctx.drawImage(ghostImg, 0, 0, canvasW, canvasH);
+      ctx.restore();
+      isGhostDrawn = true;
+    }
   }
-});
 
-// ★ 重要：AI特徴抽出時は、キャンバス上の半透明シルエットが混ざらないよう生のカメラ映像(videoSource)から直接抽出する ★
+  if (isBarcode || isOcr) {
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.48)';
+    ctx.fillRect(0, 0, canvasW, coords.y);
+    ctx.fillRect(0, coords.y + coords.h, canvasW, canvasH - (coords.y + coords.h));
+    ctx.fillRect(0, coords.y, coords.x, coords.h);
+    ctx.fillRect(coords.x + coords.w, coords.y, canvasW - (coords.x + coords.w), coords.h);
+
+    if (isBarcode) {
+      const midY = coords.y + Math.round(coords.h / 2);
+      ctx.strokeStyle = 'rgba(255, 23, 68, 0.85)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(coords.x + 10, midY);
+      ctx.lineTo(coords.x + coords.w - 10, midY);
+      ctx.stroke();
+    }
+  }
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 5;
+  ctx.strokeRect(coords.x + 2, coords.y + 2, coords.w - 4, coords.h - 4);
+
+  let modeDesc = isGhostDrawn
+    ? `👻シルエット(${ghostGuideConfig.opacity}%)に合わせて撮影`
+    : '🥐3連写＋ライバル比較AI';
+  if (isBarcode) modeDesc = '📷枠内に収めて検査ボタンを押す';
+  else if (isOcr) modeDesc = `🔤文字(OCR)照合 [正解:${step.expectedOcrText || '未設定'}]`;
+
+  const matTag = (!isBarcode && !isOcr && step.materialCode) ? ` [材料:${step.materialCode}]` : '';
+  const labelText = `${labelPrefix}${step.name}${matTag} (${modeDesc})`;
+  ctx.font = 'bold 15px sans-serif';
+  const textWidth = ctx.measureText(labelText).width;
+  const boxW = Math.min(canvasW - 12, textWidth + 18);
+  const boxH = 26;
+  const boxX = (isBarcode || isOcr) ? Math.max(4, Math.min(coords.x, canvasW - boxW - 4)) : 8;
+  const boxY = (isBarcode || isOcr) ? ((coords.y - boxH < 4) ? (coords.y + 4) : (coords.y - boxH)) : (canvasH - boxH - 8);
+
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.82)';
+  ctx.fillRect(boxX, boxY, boxW, boxH);
+  ctx.fillStyle = color;
+  ctx.fillText(labelText, boxX + 8, boxY + 18);
+}
+
+// AI特徴抽出時は、キャンバス上の半透明シルエットが混ざらないよう生のカメラ映像(videoSource)から直接抽出する
 async function extractBakeryFeatureVector(sourceCanvas) {
   const videoEl = document.getElementById('videoSource');
   const rawSource = (videoEl && isCamRunning && videoEl.readyState >= 2) ? videoEl : sourceCanvas;
