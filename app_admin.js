@@ -1,5 +1,5 @@
 // =========================================================
-// app_admin.js : 画面遷移・材料マスター画面・OCR文字検査ステップ編集統合版
+// app_admin.js : 画面遷移・材料マスター(半透明シルエット保存対応)・OCR検査ステップ統合版
 // =========================================================
 window.adminActivePart = '';
 window.adminStepsData = [];
@@ -47,7 +47,6 @@ function disableRoiResizeControlsUI() {
   }
 }
 
-// ★ 設定画面のステップ追加バーに「＋ 🔤 OCR文字検査を追加」ボタンを自動挿入 ★
 function injectAddOcrStepButtonUI() {
   const addBarcodeBtn = document.querySelector('button[onclick*="addAdminCustomStep(\'BARCODE\')"]');
   if (addBarcodeBtn && !document.getElementById('btnAddAdminOcrStep')) {
@@ -220,7 +219,7 @@ function drawAdminCanvas() {
 }
 
 // =========================================================
-// 🥐 材料マスター登録・編集画面
+// 🥐 材料マスター登録・編集画面（半透明シルエット自動保存＆プレビュー対応）
 // =========================================================
 function injectMaterialMasterPageAndMenu() {
   const topPage = document.getElementById('topMenuPage');
@@ -233,7 +232,7 @@ function injectMaterialMasterPageAndMenu() {
       matBtn.onclick = () => navigateTo('materialMasterPage');
       matBtn.innerHTML = `
         <span>🥐 パン屋AI 材料マスターの登録・編集（管理者用）</span>
-        <span class="sub">材料品番のCSV一括取込・新規作成・検索・変更、良品マスター画像の撮影登録を行います（現在: <strong id="topMaterialCount">0</strong> 件）</span>
+        <span class="sub">材料品番のCSV一括取込・新規作成・検索・変更、良品マスター画像と👻半透明シルエットの撮影登録を行います（現在: <strong id="topMaterialCount">0</strong> 件）</span>
       `;
       menuGrid.insertBefore(matBtn, menuGrid.children[1] || null);
     }
@@ -245,7 +244,7 @@ function injectMaterialMasterPageAndMenu() {
     matPage.id = 'materialMasterPage';
     matPage.innerHTML = `
       <div class="nav-banner" style="background:var(--ai-light); color:var(--ai-color); border-left-color:var(--ai-color);">
-        🥐 パン屋AI 材料マスター登録・編集画面（3連写ブレ吸収 ＆ 登録済み他材料とのライバル相対比較に対応）
+        🥐 パン屋AI 材料マスター登録・編集画面（👻半透明シルエットガイド ＆ 3連写＋ライバル相対比較に対応）
       </div>
 
       <!-- 材料マスターCSV一括取込カード -->
@@ -255,7 +254,7 @@ function injectMaterialMasterPageAndMenu() {
         </div>
         <p style="font-size:0.82rem; color:var(--muted); margin-bottom:10px;">
           <strong>A列: 材料品番</strong>（必須） ／ <strong>B列: 材料名・メモ</strong>（任意） ／ <strong>C列: 合格基準%</strong>（任意・省略時は80%）のCSVを読み込み、材料マスターの枠組みを一括登録します。<br>
-          ※すでに良品画像を登録済みの材料品番が含まれている場合、<strong>撮影済みの良品データは消さずに維持</strong>し、名称（メモ）のみを更新します。
+          ※すでに良品画像を登録済みの材料品番が含まれている場合、<strong>撮影済みの良品データやシルエット画像は消さずに維持</strong>し、名称（メモ）のみを更新します。
         </p>
 
         <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; background:#f9f5fc; border:1.5px solid #ce93d8; border-radius:8px; padding:10px 12px;">
@@ -298,10 +297,10 @@ function injectMaterialMasterPageAndMenu() {
         </div>
       </div>
 
-      <!-- ② カメラ映像 ＆ 良品マスター登録エリア（全体枠固定） -->
+      <!-- ② カメラ映像 ＆ 良品マスター登録エリア -->
       <div class="card">
         <div class="card-title" style="color:var(--ai-color); border-left-color:var(--ai-color);">
-          ② 良品マスター画像の撮影・変更（カメラ枠全体 100% 固定）
+          ② 良品マスター画像 ＆ 👻 半透明シルエットの撮影・変更（カメラ枠全体 100% 固定）
         </div>
 
         <div class="admin-layout">
@@ -323,9 +322,9 @@ function injectMaterialMasterPageAndMenu() {
 
             <div class="card" style="background:#f8fafc; margin-top:auto;">
               <div style="font-size:0.82rem; color:var(--muted); line-height:1.5;">
-                💡 <strong>似た形状の材料を見分けるコツ（ライバル相対比較）:</strong><br>
-                1. 似ている別の材料（ライバル品）もそれぞれ材料マスターに3〜5枚ずつ良品登録しておきます。<br>
-                2. 検査時は「3連写で手ブレを吸収」しつつ「登録済みの他の材料マスターすべてと裏側で比較」するため、ライバル品の方が似ている場合は即座にNGとしてブロックします。
+                💡 <strong>半透明シルエット（👻ゴーストガイド）について:</strong><br>
+                ・1枚目の良品を追加した際、自動的にその構図が「半透明シルエット」として保存されます。<br>
+                ・シルエットのON/OFFや透明度（濃さ%）は「⚙️ 製品ごとの設定画面」の「③ システム共通・読取ルール設定」でいつでも自由に変更できます。
               </div>
               <div style="margin-top:10px; display:flex; justify-content:flex-end;">
                 <button type="button" class="btn btn-dark" onclick="navigateTo('adminPage')">⚙️ 製品ごとの設定画面へ移動 ➔</button>
@@ -407,6 +406,7 @@ async function importMaterialMastersFromCsvText(text) {
         x: 0, y: 0, w: 640, h: 480,
         baseW: 640, baseH: 480,
         bakerySamples: [],
+        ghostImage: null,
         bakeryThreshold: matTh !== null ? matTh : 80,
         updatedAt: new Date().toLocaleString('ja-JP')
       };
@@ -538,7 +538,8 @@ async function updateMaterialMasterDropdowns(fromSearch = false) {
       const m = materials[k];
       const memoStr = m.memo ? ` [${m.memo}]` : '';
       const cnt = (m.bakerySamples || []).length;
-      return `<option value="${k}">${k}${memoStr} (良品:${cnt}枚 / 基準:${m.bakeryThreshold || 80}%)</option>`;
+      const gIcon = m.ghostImage ? '👻' : '';
+      return `<option value="${k}">${k}${memoStr} (良品:${cnt}枚${gIcon} / 基準:${m.bakeryThreshold || 80}%)</option>`;
     }).join('');
     sel.innerHTML = `<option value="">-- 編集・確認する材料マスターを選択 (${filteredKeys.length}件) --</option>` + opts;
 
@@ -569,6 +570,7 @@ async function createOrSwitchMaterialMaster() {
       x: 0, y: 0, w: 640, h: 480,
       baseW: 640, baseH: 480,
       bakerySamples: [],
+      ghostImage: null,
       bakeryThreshold: 80,
       updatedAt: new Date().toLocaleString('ja-JP')
     };
@@ -698,6 +700,7 @@ function renderMaterialEditorPanel() {
 
   const sampleCnt = (mat.bakerySamples || []).length;
   const th = mat.bakeryThreshold || 80;
+  const hasGhost = !!mat.ghostImage;
 
   container.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; border-bottom:1px solid #e1bee7; padding-bottom:8px;">
@@ -719,9 +722,11 @@ function renderMaterialEditorPanel() {
     </div>
 
     <div style="background:#ffffff; border:1px solid #ce93d8; border-radius:8px; padding:12px; display:flex; flex-direction:column; gap:10px;">
-      <div style="display:flex; justify-content:space-between; align-items:center;">
-        <span style="font-size:0.9rem; font-weight:700;">📸 登録済み良品マスター数:</span>
-        <strong style="font-size:1.25rem; color:${sampleCnt > 0 ? 'var(--success)' : 'var(--danger)'};">${sampleCnt} 枚</strong>
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
+        <span style="font-size:0.9rem; font-weight:700;">📸 登録済み良品マスター数: <strong style="font-size:1.2rem; color:${sampleCnt > 0 ? 'var(--success)' : 'var(--danger)'};">${sampleCnt} 枚</strong></span>
+        <span style="font-size:0.82rem; font-weight:700; color:${hasGhost ? 'var(--ai-color)' : 'var(--muted)'};">
+          ${hasGhost ? '👻 シルエット画像: 登録済' : '👻 シルエット画像: 未登録(1枚目追加で自動登録)'}
+        </span>
       </div>
 
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
@@ -731,6 +736,13 @@ function renderMaterialEditorPanel() {
         <button type="button" class="btn btn-danger" style="padding:12px;" onclick="clearMaterialMasterSamples()">
           🗑️ 良品データを全クリア
         </button>
+      </div>
+
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+        <button type="button" class="btn" style="flex:1; padding:8px; font-size:0.82rem; border-color:#ce93d8; color:var(--ai-color);" onclick="updateMaterialGhostImageOnly()">
+          👻 現在の映像でシルエット画像のみ更新
+        </button>
+        ${hasGhost ? `<img src="${mat.ghostImage}" alt="シルエット見本" style="width:64px; height:48px; object-fit:cover; border-radius:4px; border:1.5px solid var(--ai-color);">` : ''}
       </div>
 
       <button type="button" class="btn btn-primary" id="btnTestMatMaster" style="padding:10px;" onclick="testCurrentMaterialMasterLive()">
@@ -756,6 +768,7 @@ async function updateMaterialThreshold(val) {
   await updateMaterialMasterDropdowns(false);
 }
 
+// ★ 良品マスター追加時、まだシルエット画像がなければ1枚目の構図を自動でシルエット登録 ★
 async function captureMaterialMasterSample() {
   if (!isCamRunning) return alert('先に「📷 材料撮影用カメラ起動」を押してください');
   if (!window.activeMaterialCode) return alert('材料品番を選択してください');
@@ -768,6 +781,11 @@ async function captureMaterialMasterSample() {
   const vec = await extractBakeryFeatureVector(matCanvas);
   if (!mat.bakerySamples) mat.bakerySamples = [];
   mat.bakerySamples.push(vec);
+
+  if (!mat.ghostImage && typeof captureGhostImageDataUrl === 'function') {
+    mat.ghostImage = captureGhostImageDataUrl(matCanvas);
+  }
+
   mat.isFullFrame = true;
   mat.updatedAt = new Date().toLocaleString('ja-JP');
 
@@ -776,22 +794,47 @@ async function captureMaterialMasterSample() {
   playBuzzerPattern('OK');
   await updateMaterialMasterDropdowns(false);
   renderMaterialEditorPanel();
+  drawMaterialCanvas();
+}
+
+// ★ シルエット画像だけを現在のカメラ映像で撮り直す関数 ★
+async function updateMaterialGhostImageOnly() {
+  if (!isCamRunning) return alert('先に「📷 材料撮影用カメラ起動」を押してください');
+  if (!window.activeMaterialCode) return alert('材料品番を選択してください');
+
+  const materials = (await idbGet(MATERIAL_MASTER_KEY)) || {};
+  const mat = materials[window.activeMaterialCode];
+  if (!mat) return;
+
+  const matCanvas = document.getElementById('materialCanvas');
+  if (typeof captureGhostImageDataUrl === 'function') {
+    mat.ghostImage = captureGhostImageDataUrl(matCanvas);
+    mat.updatedAt = new Date().toLocaleString('ja-JP');
+    await idbSet(MATERIAL_MASTER_KEY, materials);
+    window.materialMastersCache = materials;
+    playBuzzerPattern('OK');
+    await updateMaterialMasterDropdowns(false);
+    renderMaterialEditorPanel();
+    drawMaterialCanvas();
+  }
 }
 
 async function clearMaterialMasterSamples() {
   if (!window.activeMaterialCode) return;
-  if (!confirm(`材料マスター [ ${window.activeMaterialCode} ] の良品学習データをすべてクリアしますか？`)) return;
+  if (!confirm(`材料マスター [ ${window.activeMaterialCode} ] の良品学習データとシルエット画像をすべてクリアしますか？`)) return;
 
   const materials = (await idbGet(MATERIAL_MASTER_KEY)) || {};
   const mat = materials[window.activeMaterialCode];
   if (!mat) return;
   mat.bakerySamples = [];
+  mat.ghostImage = null;
   mat.updatedAt = new Date().toLocaleString('ja-JP');
 
   await idbSet(MATERIAL_MASTER_KEY, materials);
   window.materialMastersCache = materials;
   await updateMaterialMasterDropdowns(false);
   renderMaterialEditorPanel();
+  drawMaterialCanvas();
 }
 
 async function testCurrentMaterialMasterLive() {
@@ -867,6 +910,8 @@ function drawMaterialCanvas() {
     const dummyStep = {
       name: `${window.activeMaterialCode}${mat.memo ? ` (${mat.memo})` : ''}`,
       type: 'BAKERY',
+      materialCode: window.activeMaterialCode,
+      ghostImage: mat.ghostImage || null,
       isFullFrame: true
     };
     drawSmartRoiOverlay(ctx, matCanvas.width, matCanvas.height, dummyStep, '材料マスター: ');
@@ -879,7 +924,7 @@ async function setMaterialFullFrame() {}
 async function nudgeMaterialRoi() {}
 
 // =========================================================
-// 🔎 管理者用：製品の品番検索 ＆ ステップ編集（BARCODE / OCR / BAKERY）
+// 🔎 管理者用：製品の品番検索 ＆ ステップ編集
 // =========================================================
 function injectAdminPartSearchUI() {
   const aSel = document.getElementById('selAdminProfile');
@@ -1064,7 +1109,7 @@ function renderAdminStepsList() {
     if (s.fromCsv) {
       originBadge = `<span style="font-size:0.72rem; background:var(--primary-light); color:var(--primary-dark); padding:2px 6px; border-radius:4px; font-weight:700;">CSV連携${s.refName ? ` (${s.refName})` : ''}</span>`;
     } else if (s.type === 'BAKERY') {
-      originBadge = `<span style="font-size:0.72rem; background:var(--ai-light); color:var(--ai-color); padding:2px 6px; border-radius:4px; font-weight:700;">3連写＋ライバル比較AI</span>`;
+      originBadge = `<span style="font-size:0.72rem; background:var(--ai-light); color:var(--ai-color); padding:2px 6px; border-radius:4px; font-weight:700;">👻シルエット＋3連写AI</span>`;
     } else if (s.type === 'OCR') {
       originBadge = `<span style="font-size:0.72rem; background:#e0f7fa; color:#006064; padding:2px 6px; border-radius:4px; font-weight:700;">🔤 OCR文字検査</span>`;
     } else {
@@ -1073,12 +1118,14 @@ function renderAdminStepsList() {
 
     const linkedMat = s.materialCode ? materials[s.materialCode] : null;
     const matSampleCnt = linkedMat ? (linkedMat.bakerySamples || []).length : (s.bakerySamples || []).length;
+    const hasGhost = !!(linkedMat?.ghostImage || s.ghostImage);
     const matOptions = `<option value="">-- 材料マスターを選択 (${matKeys.length}件) --</option>` +
       matKeys.map(mk => {
         const mObj = materials[mk];
         const mMemo = mObj.memo ? ` [${mObj.memo}]` : '';
         const cnt = (mObj.bakerySamples || []).length;
-        return `<option value="${mk}" ${s.materialCode === mk ? 'selected' : ''}>${mk}${mMemo} (良品:${cnt}枚)</option>`;
+        const gMark = mObj.ghostImage ? '👻' : '';
+        return `<option value="${mk}" ${s.materialCode === mk ? 'selected' : ''}>${mk}${mMemo} (良品:${cnt}枚${gMark})</option>`;
       }).join('');
 
     let detailSettingHtml = '';
@@ -1124,7 +1171,7 @@ function renderAdminStepsList() {
           <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
             <span>
               状態: ${s.materialCode
-                ? (linkedMat ? `<strong style="color:var(--success);">✅ 材料 [${s.materialCode}] 連携中 (良品:${matSampleCnt}枚)</strong>` : `<strong style="color:var(--danger);">⚠️ 材料 [${s.materialCode}] が未登録</strong>`)
+                ? (linkedMat ? `<strong style="color:var(--success);">✅ 材料 [${s.materialCode}] 連携中 (良品:${matSampleCnt}枚 / ${hasGhost ? '👻シルエット有' : 'シルエット未登録'})</strong>` : `<strong style="color:var(--danger);">⚠️ 材料 [${s.materialCode}] が未登録</strong>`)
                 : `<span style="color:var(--muted);">材料マスター未選択 (個別良品:${matSampleCnt}枚)</span>`}
             </span>
             <div style="display:flex; gap:6px; align-items:center;">
@@ -1181,7 +1228,8 @@ function filterStepMaterialSelect(stepIdx, query) {
       const mObj = materials[mk];
       const mMemo = mObj.memo ? ` [${mObj.memo}]` : '';
       const cnt = (mObj.bakerySamples || []).length;
-      return `<option value="${mk}" ${currentVal === mk ? 'selected' : ''}>${mk}${mMemo} (良品:${cnt}枚)</option>`;
+      const gMark = mObj.ghostImage ? '👻' : '';
+      return `<option value="${mk}" ${currentVal === mk ? 'selected' : ''}>${mk}${mMemo} (良品:${cnt}枚${gMark})</option>`;
     }).join('');
 }
 
@@ -1300,16 +1348,22 @@ async function registerBakerySample(idx) {
   const vec = await extractBakeryFeatureVector(adminCanvas);
   if (!s.bakerySamples) s.bakerySamples = [];
   s.bakerySamples.push(vec);
+  if (!s.ghostImage && typeof captureGhostImageDataUrl === 'function') {
+    s.ghostImage = captureGhostImageDataUrl(adminCanvas);
+  }
   s.isFullFrame = true;
   playBuzzerPattern('OK');
   await autoSaveAdminProfile();
   renderAdminStepsList();
+  drawAdminCanvas();
 }
 
 async function clearBakerySamples(idx) {
   window.adminStepsData[idx].bakerySamples = [];
+  window.adminStepsData[idx].ghostImage = null;
   await autoSaveAdminProfile();
   renderAdminStepsList();
+  drawAdminCanvas();
 }
 
 async function captureExpectedBarcodeFromCam(idx) {
@@ -1323,7 +1377,6 @@ async function captureExpectedBarcodeFromCam(idx) {
   renderAdminStepsList();
 }
 
-// ★ 設定画面のカメラ枠内からOCRで正解文字列を自動読み取りしてセットする関数 ★
 async function captureExpectedOcrFromCam(idx) {
   if (!isCamRunning) return alert('先に「📷 設定用カメラ起動」を押してください');
   const s = window.adminStepsData[idx];
@@ -1332,7 +1385,9 @@ async function captureExpectedOcrFromCam(idx) {
   const coords = getScaledStepCoords(s, adminCanvas.width, adminCanvas.height);
   if (typeof recognizeOcrFromCanvasRect !== 'function') return;
 
-  const readText = await recognizeOcrFromCanvasRect(adminCanvas, coords.x, coords.y, coords.w, coords.h);
+  const videoEl = document.getElementById('videoSource');
+  const rawSource = (videoEl && isCamRunning && videoEl.readyState >= 2) ? videoEl : adminCanvas;
+  const readText = await recognizeOcrFromCanvasRect(rawSource, coords.x, coords.y, coords.w, coords.h);
   if (!readText) {
     return alert('水色の枠内から文字を読み取れませんでした。文字を枠の中央に合わせて再度お試しください。');
   }
@@ -1343,7 +1398,7 @@ async function captureExpectedOcrFromCam(idx) {
   drawAdminCanvas();
 }
 
-// JSONバックアップ（材料マスター・OCRステップも一括で書き出し・復元）
+// JSONバックアップ（シルエット画像・材料マスター・設定も一括で書き出し・復元）
 async function exportAllProfilesJson() {
   const data = {
     profiles: (await idbGet(STORAGE_KEY)) || {},
