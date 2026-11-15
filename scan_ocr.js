@@ -1,5 +1,5 @@
 // =========================================================
-// scan_ocr.js : 品番QR読取・影除去＆枠可変OCR（括弧＆O/0・1/I同一視対応）
+// scan_ocr.js : 品番QR読取・影除去＆枠可変OCR・ステップOCR共通エンジン
 // =========================================================
 let partQrScanner = null;
 let isPartQrLocked = false;
@@ -29,7 +29,6 @@ async function tryStartInspectionWithPart(partNo) {
   const cleaned = normalizeCodeString(partNo);
   const stored = (await idbGet(STORAGE_KEY)) || {};
 
-  // O(オー)と0(ゼロ)、1とIの同一視設定を考慮してマスタから正式品番を検索
   const matchedKey = (typeof findMatchingMasterPart === 'function')
     ? findMatchingMasterPart(cleaned, stored)
     : (stored[cleaned] ? cleaned : null);
@@ -51,7 +50,7 @@ async function tryStartInspectionWithPart(partNo) {
   updateInspectStepUI(true);
 }
 
-// ★ 元の白いガイドライン設定（qrbox: { width: 250, height: 150 }）に完全復元 ★
+// 元の白いガイドライン設定（qrbox: { width: 250, height: 150 }）
 async function startPartQrScanner() {
   blurActiveInput();
   await stopPartScanCameras();
@@ -86,6 +85,78 @@ async function startPartQrScanner() {
   });
 }
 
+// ★ 共通OCRワーカー初期化関数（品番読取＆ステップOCR検査で共用） ★
+async function ensureTesseractWorkerReady() {
+  if (!tesseractWorker) {
+    tesseractWorker = await Tesseract.createWorker('eng');
+    await tesseractWorker.setParameters({
+      tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_()[]/.:',
+      tessedit_pageseg_mode: '7'
+    });
+  }
+  return tesseractWorker;
+}
+
+// ★ 任意のソース(Video/Canvas)と矩形座標から「影除去二値化＋OCR文字認識」を行う共通関数 ★
+async function recognizeOcrFromCanvasRect(sourceEl, sx, sy, sw, sh, customShadowBias = null, targetPreviewCanvas = null) {
+  if (sw <= 10 || sh <= 10) return '';
+  await ensureTesseractWorkerReady();
+
+  const pad = 12;
+  const workCanvas = targetPreviewCanvas || document.createElement('canvas');
+  workCanvas.width = sw + pad * 2;
+  workCanvas.height = sh + pad * 2;
+  const dCtx = workCanvas.getContext('2d', { willReadFrequently: true });
+
+  dCtx.fillStyle = '#ffffff';
+  dCtx.fillRect(0, 0, workCanvas.width, workCanvas.height);
+  dCtx.drawImage(sourceEl, sx, sy, sw, sh, pad, pad, sw, sh);
+
+  const imgData = dCtx.getImageData(0, 0, workCanvas.width, workCanvas.height);
+  const d = imgData.data;
+  const W = workCanvas.width, H = workCanvas.height;
+  const gray = new Uint8Array(W * H);
+  const integral = new Int32Array(W * H);
+
+  for (let y = 0; y < H; y++) {
+    let rowSum = 0;
+    for (let x = 0; x < W; x++) {
+      const idx = y * W + x;
+      const p = idx * 4;
+      const g = Math.round(0.299 * d[p] + 0.587 * d[p + 1] + 0.114 * d[p + 2]);
+      gray[idx] = g;
+      rowSum += g;
+      integral[idx] = (y > 0 ? integral[(y - 1) * W + x] : 0) + rowSum;
+    }
+  }
+
+  const winR = Math.max(8, Math.floor(Math.min(W, H) / 4));
+  const defaultShadow = (typeof ocrDefaultConfig !== 'undefined' && ocrDefaultConfig.shadow) ? ocrDefaultConfig.shadow : 14;
+  const shadowBias = customShadowBias !== null ? customShadowBias : defaultShadow;
+
+  for (let y = 0; y < H; y++) {
+    const y1 = Math.max(0, y - winR), y2 = Math.min(H - 1, y + winR);
+    for (let x = 0; x < W; x++) {
+      const x1 = Math.max(0, x - winR), x2 = Math.min(W - 1, x + winR);
+      const count = (x2 - x1 + 1) * (y2 - y1 + 1);
+      const sum = integral[y2 * W + x2]
+                - (y1 > 0 ? integral[(y1 - 1) * W + x2] : 0)
+                - (x1 > 0 ? integral[y2 * W + (x1 - 1)] : 0)
+                + (y1 > 0 && x1 > 0 ? integral[(y1 - 1) * W + (x1 - 1)] : 0);
+      const mean = sum / count;
+      const idx = y * W + x;
+      const isBoundaryPad = (x < pad || x >= W - pad || y < pad || y >= H - pad);
+      const bin = (!isBoundaryPad && gray[idx] < (mean - shadowBias)) ? 0 : 255;
+      const p = idx * 4;
+      d[p] = d[p + 1] = d[p + 2] = bin;
+    }
+  }
+  dCtx.putImageData(imgData, 0, 0);
+
+  const { data: { text } } = await tesseractWorker.recognize(workCanvas);
+  return normalizeCodeString(text).replace(/[^A-Za-z0-9_\-()\[\]/.:]/g, '');
+}
+
 async function startPartOcrScanner() {
   blurActiveInput();
   await stopPartScanCameras();
@@ -109,14 +180,10 @@ async function startPartOcrScanner() {
     vid.srcObject = window.partOcrStream;
     await vid.play();
 
-    if (!tesseractWorker) {
-      document.getElementById('ocrRoiBadge').textContent = 'OCRエンジン初期化中...';
-      tesseractWorker = await Tesseract.createWorker('eng');
-      await tesseractWorker.setParameters({
-        tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_()[]',
-        tessedit_pageseg_mode: '7'
-      });
-    }
+    document.getElementById('ocrRoiBadge').textContent = 'OCRエンジン初期化中...';
+    await ensureTesseractWorkerReady();
+    document.getElementById('ocrRoiBadge').textContent = '緑枠内に品番を合わせてください';
+
     partOcrTimer = setInterval(() => processOcrFrame(false), 600);
   } catch (e) {
     alert('OCRカメラ起動エラー: ' + e.message);
@@ -157,73 +224,23 @@ async function processOcrFrame(forceAccept) {
     const sh = Math.min(vh - sy, Math.round(gRect.height / scale));
 
     if (sw > 10 && sh > 10) {
-      const pad = 12;
       const dbgCanvas = document.getElementById('ocrDebugCanvas');
-      dbgCanvas.width = sw + pad * 2;
-      dbgCanvas.height = sh + pad * 2;
-      const dCtx = dbgCanvas.getContext('2d', { willReadFrequently: true });
-
-      dCtx.fillStyle = '#ffffff';
-      dCtx.fillRect(0, 0, dbgCanvas.width, dbgCanvas.height);
-      dCtx.drawImage(vid, sx, sy, sw, sh, pad, pad, sw, sh);
-
-      const imgData = dCtx.getImageData(0, 0, dbgCanvas.width, dbgCanvas.height);
-      const d = imgData.data;
-      const W = dbgCanvas.width, H = dbgCanvas.height;
-      const gray = new Uint8Array(W * H);
-      const integral = new Int32Array(W * H);
-
-      for (let y = 0; y < H; y++) {
-        let rowSum = 0;
-        for (let x = 0; x < W; x++) {
-          const idx = y * W + x;
-          const p = idx * 4;
-          const g = Math.round(0.299 * d[p] + 0.587 * d[p + 1] + 0.114 * d[p + 2]);
-          gray[idx] = g;
-          rowSum += g;
-          integral[idx] = (y > 0 ? integral[(y - 1) * W + x] : 0) + rowSum;
-        }
-      }
-
-      const winR = Math.max(8, Math.floor(Math.min(W, H) / 4));
       const shadowBias = parseInt(document.getElementById('rngOcrShadow').value, 10) || 14;
+      const cleaned = await recognizeOcrFromCanvasRect(vid, sx, sy, sw, sh, shadowBias, dbgCanvas);
 
-      for (let y = 0; y < H; y++) {
-        const y1 = Math.max(0, y - winR), y2 = Math.min(H - 1, y + winR);
-        for (let x = 0; x < W; x++) {
-          const x1 = Math.max(0, x - winR), x2 = Math.min(W - 1, x + winR);
-          const count = (x2 - x1 + 1) * (y2 - y1 + 1);
-          const sum = integral[y2 * W + x2]
-                    - (y1 > 0 ? integral[(y1 - 1) * W + x2] : 0)
-                    - (x1 > 0 ? integral[y2 * W + (x1 - 1)] : 0)
-                    + (y1 > 0 && x1 > 0 ? integral[(y1 - 1) * W + (x1 - 1)] : 0);
-          const mean = sum / count;
-          const idx = y * W + x;
-          const isBoundaryPad = (x < pad || x >= W - pad || y < pad || y >= H - pad);
-          const bin = (!isBoundaryPad && gray[idx] < (mean - shadowBias)) ? 0 : 255;
-          const p = idx * 4;
-          d[p] = d[p + 1] = d[p + 2] = bin;
-        }
-      }
-      dCtx.putImageData(imgData, 0, 0);
+      if (cleaned.length >= 2) {
+        const stored = (await idbGet(STORAGE_KEY)) || {};
+        const matchedKey = (typeof findMatchingMasterPart === 'function')
+          ? findMatchingMasterPart(cleaned, stored)
+          : (stored[cleaned] ? cleaned : null);
 
-      if (tesseractWorker) {
-        const { data: { text } } = await tesseractWorker.recognize(dbgCanvas);
-        const cleaned = normalizeCodeString(text).replace(/[^A-Za-z0-9_\-()\[\]]/g, '');
-        if (cleaned.length >= 2) {
-          const stored = (await idbGet(STORAGE_KEY)) || {};
-          const matchedKey = (typeof findMatchingMasterPart === 'function')
-            ? findMatchingMasterPart(cleaned, stored)
-            : (stored[cleaned] ? cleaned : null);
+        document.getElementById('ocrRoiBadge').textContent = matchedKey
+          ? `一致: ${matchedKey}`
+          : `読取中: ${cleaned}`;
 
-          document.getElementById('ocrRoiBadge').textContent = matchedKey
-            ? `一致: ${matchedKey}`
-            : `読取中: ${cleaned}`;
-
-          if (matchedKey || forceAccept) {
-            await stopPartScanCameras();
-            await tryStartInspectionWithPart(matchedKey || cleaned);
-          }
+        if (matchedKey || forceAccept) {
+          await stopPartScanCameras();
+          await tryStartInspectionWithPart(matchedKey || cleaned);
         }
       }
     }
