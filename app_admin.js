@@ -1,5 +1,5 @@
 // =========================================================
-// app_admin.js : 画面遷移・材料マスター画面(3連写&ライバル比較テスト対応)・全体枠固定版
+// app_admin.js : 画面遷移・材料マスター画面・OCR文字検査ステップ編集統合版
 // =========================================================
 window.adminActivePart = '';
 window.adminStepsData = [];
@@ -27,6 +27,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   disableRoiResizeControlsUI();
   injectMaterialMasterPageAndMenu();
   injectAdminPartSearchUI();
+  injectAddOcrStepButtonUI();
   setupKeyboardShortcuts();
   await updateProfileDropdowns();
   await updateMaterialMasterDropdowns();
@@ -43,6 +44,21 @@ function disableRoiResizeControlsUI() {
   const nudgeBtn = document.querySelector('button[onclick*="nudgeAdminStep"]');
   if (nudgeBtn && nudgeBtn.parentElement) {
     nudgeBtn.parentElement.style.display = 'none';
+  }
+}
+
+// ★ 設定画面のステップ追加バーに「＋ 🔤 OCR文字検査を追加」ボタンを自動挿入 ★
+function injectAddOcrStepButtonUI() {
+  const addBarcodeBtn = document.querySelector('button[onclick*="addAdminCustomStep(\'BARCODE\')"]');
+  if (addBarcodeBtn && !document.getElementById('btnAddAdminOcrStep')) {
+    const ocrBtn = document.createElement('button');
+    ocrBtn.id = 'btnAddAdminOcrStep';
+    ocrBtn.type = 'button';
+    ocrBtn.className = 'btn btn-primary';
+    ocrBtn.style.background = '#0097a7';
+    ocrBtn.textContent = '＋ 🔤 OCR文字検査を追加';
+    ocrBtn.onclick = () => addAdminCustomStep('OCR');
+    addBarcodeBtn.parentNode.insertBefore(ocrBtn, addBarcodeBtn.nextSibling);
   }
 }
 
@@ -155,12 +171,13 @@ function renderLoop() {
 
 function drawSmartRoiOverlay(ctx, canvasW, canvasH, step, labelPrefix) {
   const coords = getScaledStepCoords(step, canvasW, canvasH);
-  const color = step.type === 'BAKERY' ? '#ab47bc' : '#00e676';
+  const color = step.type === 'BAKERY' ? '#ab47bc' : (step.type === 'OCR' ? '#00e5ff' : '#00e676');
   ctx.strokeStyle = color;
   ctx.lineWidth = 6;
   ctx.strokeRect(coords.x + 3, coords.y + 3, coords.w - 6, coords.h - 6);
 
-  const labelText = `${labelPrefix}${step.name} (${step.type === 'BAKERY' ? '🥐3連写＋ライバル比較AI' : '📷コード照合'})`;
+  const typeLabel = step.type === 'BAKERY' ? '🥐3連写＋ライバル比較AI' : (step.type === 'OCR' ? '🔤OCR文字照合' : '📷コード照合');
+  const labelText = `${labelPrefix}${step.name} (${typeLabel})`;
   ctx.font = 'bold 15px sans-serif';
   const textWidth = ctx.measureText(labelText).width;
   const boxW = Math.min(canvasW - 12, textWidth + 18);
@@ -203,7 +220,7 @@ function drawAdminCanvas() {
 }
 
 // =========================================================
-// 🥐 材料マスター登録・編集画面（3連写＋ライバル比較テスト搭載）
+// 🥐 材料マスター登録・編集画面
 // =========================================================
 function injectMaterialMasterPageAndMenu() {
   const topPage = document.getElementById('topMenuPage');
@@ -256,7 +273,6 @@ function injectMaterialMasterPageAndMenu() {
           ① 材料品番の検索・新規追加・名称変更
         </div>
 
-        <!-- 材料品番の検索枠 -->
         <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px; background:#f3e5f5; padding:8px 10px; border-radius:8px; border:1px solid #ce93d8;">
           <span style="font-size:0.85rem; font-weight:700; color:var(--ai-color);">🔎 材料品番を検索:</span>
           <input type="text" id="txtMaterialSearch" placeholder="材料品番や名称の一部を入力して絞り込み..." style="flex:1; min-width:180px; padding:6px 10px;" autocomplete="off">
@@ -264,7 +280,6 @@ function injectMaterialMasterPageAndMenu() {
           <button type="button" class="btn" style="padding:5px 10px; font-size:0.78rem;" onclick="clearMaterialSearch()">クリア</button>
         </div>
 
-        <!-- 既存選択 ＆ 新規作成 -->
         <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
           <select id="selMaterialMaster" style="flex:1; min-width:220px;" onchange="loadMaterialMaster(this.value)">
             <option value="">-- 編集・確認する材料マスターを選択 --</option>
@@ -274,7 +289,6 @@ function injectMaterialMasterPageAndMenu() {
           <button type="button" class="btn btn-danger" onclick="deleteCurrentMaterialMaster()">🗑️ この材料を削除</button>
         </div>
 
-        <!-- 選択中の材料品番の名称変更・備考編集バー -->
         <div id="materialRenameBar" style="display:none; gap:8px; align-items:center; flex-wrap:wrap; padding:8px 10px; background:#fafafa; border:1px dashed var(--border); border-radius:8px;">
           <span style="font-size:0.82rem; font-weight:700;">✏️ 選択中の材料品番を変更:</span>
           <input type="text" id="txtRenameMaterialCode" placeholder="変更後の材料品番" style="width:170px; padding:5px 8px;">
@@ -331,7 +345,6 @@ function injectMaterialMasterPageAndMenu() {
   }
 }
 
-// 材料マスターCSV一括取込処理
 function handleMaterialCsvSelect(event) {
   blurActiveInput();
   const file = event.target.files[0];
@@ -781,7 +794,6 @@ async function clearMaterialMasterSamples() {
   renderMaterialEditorPanel();
 }
 
-// 材料マスター画面でのテスト照合（3連写＋他材料ライバル比較）
 async function testCurrentMaterialMasterLive() {
   if (!isCamRunning) return alert('先に「📷 材料撮影用カメラ起動」を押してください');
   const mat = window.materialMastersCache[window.activeMaterialCode];
@@ -867,7 +879,7 @@ async function setMaterialFullFrame() {}
 async function nudgeMaterialRoi() {}
 
 // =========================================================
-// 🔎 管理者用：製品の品番検索 ＆ ステップへの材料マスター紐づけ
+// 🔎 管理者用：製品の品番検索 ＆ ステップ編集（BARCODE / OCR / BAKERY）
 // =========================================================
 function injectAdminPartSearchUI() {
   const aSel = document.getElementById('selAdminProfile');
@@ -983,7 +995,9 @@ async function createOrSwitchAdminProfile() {
         baseW: 640, baseH: 480,
         bakerySamples: [],
         bakeryThreshold: 80,
-        expectedBarcode: ''
+        expectedBarcode: '',
+        expectedOcrText: '',
+        ocrMatchMode: 'EXACT'
       }]
     };
     await idbSet(STORAGE_KEY, stored);
@@ -1046,9 +1060,16 @@ function renderAdminStepsList() {
 
   container.innerHTML = window.adminStepsData.map((s, idx) => {
     const isSel = idx === selectedAdminStepIdx ? 'selected' : '';
-    const originBadge = s.fromCsv
-      ? `<span style="font-size:0.72rem; background:var(--primary-light); color:var(--primary-dark); padding:2px 6px; border-radius:4px; font-weight:700;">CSV連携${s.refName ? ` (${s.refName})` : ''}</span>`
-      : `<span style="font-size:0.72rem; background:var(--ai-light); color:var(--ai-color); padding:2px 6px; border-radius:4px; font-weight:700;">${s.type === 'BAKERY' ? '3連写＋ライバル比較AI' : '追加ステップ'}</span>`;
+    let originBadge = '';
+    if (s.fromCsv) {
+      originBadge = `<span style="font-size:0.72rem; background:var(--primary-light); color:var(--primary-dark); padding:2px 6px; border-radius:4px; font-weight:700;">CSV連携${s.refName ? ` (${s.refName})` : ''}</span>`;
+    } else if (s.type === 'BAKERY') {
+      originBadge = `<span style="font-size:0.72rem; background:var(--ai-light); color:var(--ai-color); padding:2px 6px; border-radius:4px; font-weight:700;">3連写＋ライバル比較AI</span>`;
+    } else if (s.type === 'OCR') {
+      originBadge = `<span style="font-size:0.72rem; background:#e0f7fa; color:#006064; padding:2px 6px; border-radius:4px; font-weight:700;">🔤 OCR文字検査</span>`;
+    } else {
+      originBadge = `<span style="font-size:0.72rem; background:#e8f5e9; color:#2e7d32; padding:2px 6px; border-radius:4px; font-weight:700;">追加コードステップ</span>`;
+    }
 
     const linkedMat = s.materialCode ? materials[s.materialCode] : null;
     const matSampleCnt = linkedMat ? (linkedMat.bakerySamples || []).length : (s.bakerySamples || []).length;
@@ -1059,6 +1080,62 @@ function renderAdminStepsList() {
         const cnt = (mObj.bakerySamples || []).length;
         return `<option value="${mk}" ${s.materialCode === mk ? 'selected' : ''}>${mk}${mMemo} (良品:${cnt}枚)</option>`;
       }).join('');
+
+    let detailSettingHtml = '';
+    if (s.type === 'BARCODE') {
+      detailSettingHtml = `
+        <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; font-size:0.8rem;">
+          <label>正解コード:</label>
+          <input type="text" value="${s.expectedBarcode || ''}" style="flex:1; padding:4px;" onclick="event.stopPropagation();" onchange="updateAdminStepField(${idx}, 'expectedBarcode', this.value)">
+          <button class="btn btn-primary" style="padding:4px 8px; font-size:0.75rem;" onclick="event.stopPropagation(); captureExpectedBarcodeFromCam(${idx})">🎯 枠内コード読取</button>
+        </div>
+      `;
+    } else if (s.type === 'OCR') {
+      const mMode = s.ocrMatchMode || 'EXACT';
+      detailSettingHtml = `
+        <div style="background:#e0f7fa; border:1px solid #80deea; border-radius:6px; padding:8px; display:flex; flex-direction:column; gap:6px; font-size:0.8rem;" onclick="event.stopPropagation();">
+          <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+            <label style="font-weight:700; color:#006064;">🔤 正解文字列:</label>
+            <input type="text" value="${s.expectedOcrText || ''}" placeholder="例: RU-L9LF(S) や LOT-01" style="flex:1; min-width:140px; padding:4px 6px;" onchange="updateAdminStepField(${idx}, 'expectedOcrText', normalizeCodeString(this.value))">
+            <button type="button" class="btn btn-primary" style="background:#0097a7; padding:4px 8px; font-size:0.75rem;" onclick="captureExpectedOcrFromCam(${idx})">🎯 枠内文字読取</button>
+          </div>
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
+            <span style="font-size:0.75rem; color:#006064;">※設定画面の「大文字小文字無視」「Oと0同一視」「1とI同一視」「OCR枠サイズ」が自動適用されます</span>
+            <div style="display:flex; gap:4px; align-items:center;">
+              <label style="font-weight:700; color:#006064;">判定条件:</label>
+              <select style="padding:3px;" ontouchstart="event.stopPropagation();" onchange="updateAdminStepField(${idx}, 'ocrMatchMode', this.value)">
+                <option value="EXACT" ${mMode === 'EXACT' ? 'selected' : ''}>完全一致</option>
+                <option value="CONTAINS" ${mMode === 'CONTAINS' ? 'selected' : ''}>正解文字を含む (部分一致)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      `;
+    } else {
+      detailSettingHtml = `
+        <div style="background:#f3e5f5; border:1px solid #ce93d8; border-radius:6px; padding:8px; display:flex; flex-direction:column; gap:6px; font-size:0.8rem;" onclick="event.stopPropagation();">
+          <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+            <label style="font-weight:700; color:var(--ai-color);">🥐 照合する材料マスター:</label>
+            <input type="text" placeholder="🔎 材料絞り込み..." style="width:125px; padding:3px 6px; font-size:0.78rem;" oninput="filterStepMaterialSelect(${idx}, this.value)">
+            <select id="selStepMat_${idx}" style="flex:1; min-width:170px; padding:4px;" ontouchstart="event.stopPropagation();" onchange="assignMaterialMasterToStep(${idx}, this.value)">
+              ${matOptions}
+            </select>
+          </div>
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
+            <span>
+              状態: ${s.materialCode
+                ? (linkedMat ? `<strong style="color:var(--success);">✅ 材料 [${s.materialCode}] 連携中 (良品:${matSampleCnt}枚)</strong>` : `<strong style="color:var(--danger);">⚠️ 材料 [${s.materialCode}] が未登録</strong>`)
+                : `<span style="color:var(--muted);">材料マスター未選択 (個別良品:${matSampleCnt}枚)</span>`}
+            </span>
+            <div style="display:flex; gap:6px; align-items:center;">
+              <label>合格一致率(%):</label>
+              <input type="number" value="${s.bakeryThreshold || (linkedMat ? linkedMat.bakeryThreshold : 80)}" min="50" max="99" style="width:65px; padding:3px;" onchange="updateAdminStepField(${idx}, 'bakeryThreshold', parseInt(this.value,10))">
+              <button type="button" class="btn btn-ai" style="padding:3px 8px; font-size:0.74rem;" onclick="openMaterialMasterFromStep('${s.materialCode || ''}')">✏️ 材料マスターを編集</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
 
     return `
       <div class="step-admin-item ${isSel} ${s.fromCsv ? 'from-csv' : 'custom-step'}" onclick="selectAdminStep(${idx})">
@@ -1077,39 +1154,12 @@ function renderAdminStepsList() {
           <label>種別:</label>
           <select style="padding:4px;" onclick="event.stopPropagation();" ontouchstart="event.stopPropagation();" onchange="updateAdminStepField(${idx}, 'type', this.value)">
             <option value="BARCODE" ${s.type === 'BARCODE' ? 'selected' : ''}>📷 QR/バーコード照合</option>
+            <option value="OCR" ${s.type === 'OCR' ? 'selected' : ''}>🔤 OCR文字照合 (ラベル印字確認)</option>
             <option value="BAKERY" ${s.type === 'BAKERY' ? 'selected' : ''}>🥐 パン屋AI (材料マスター照合)</option>
           </select>
         </div>
 
-        ${s.type === 'BARCODE' ? `
-          <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; font-size:0.8rem;">
-            <label>正解コード:</label>
-            <input type="text" value="${s.expectedBarcode || ''}" style="flex:1; padding:4px;" onclick="event.stopPropagation();" onchange="updateAdminStepField(${idx}, 'expectedBarcode', this.value)">
-            <button class="btn btn-primary" style="padding:4px 8px; font-size:0.75rem;" onclick="event.stopPropagation(); captureExpectedBarcodeFromCam(${idx})">🎯 枠内コード読取</button>
-          </div>
-        ` : `
-          <div style="background:#f3e5f5; border:1px solid #ce93d8; border-radius:6px; padding:8px; display:flex; flex-direction:column; gap:6px; font-size:0.8rem;" onclick="event.stopPropagation();">
-            <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
-              <label style="font-weight:700; color:var(--ai-color);">🥐 照合する材料マスター:</label>
-              <input type="text" placeholder="🔎 材料絞り込み..." style="width:125px; padding:3px 6px; font-size:0.78rem;" oninput="filterStepMaterialSelect(${idx}, this.value)">
-              <select id="selStepMat_${idx}" style="flex:1; min-width:170px; padding:4px;" ontouchstart="event.stopPropagation();" onchange="assignMaterialMasterToStep(${idx}, this.value)">
-                ${matOptions}
-              </select>
-            </div>
-            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
-              <span>
-                状態: ${s.materialCode
-                  ? (linkedMat ? `<strong style="color:var(--success);">✅ 材料 [${s.materialCode}] 連携中 (良品:${matSampleCnt}枚)</strong>` : `<strong style="color:var(--danger);">⚠️ 材料 [${s.materialCode}] が未登録</strong>`)
-                  : `<span style="color:var(--muted);">材料マスター未選択 (個別良品:${matSampleCnt}枚)</span>`}
-              </span>
-              <div style="display:flex; gap:6px; align-items:center;">
-                <label>合格一致率(%):</label>
-                <input type="number" value="${s.bakeryThreshold || (linkedMat ? linkedMat.bakeryThreshold : 80)}" min="50" max="99" style="width:65px; padding:3px;" onchange="updateAdminStepField(${idx}, 'bakeryThreshold', parseInt(this.value,10))">
-                <button type="button" class="btn btn-ai" style="padding:3px 8px; font-size:0.74rem;" onclick="openMaterialMasterFromStep('${s.materialCode || ''}')">✏️ 材料マスターを編集</button>
-              </div>
-            </div>
-          </div>
-        `}
+        ${detailSettingHtml}
       </div>
     `;
   }).join('');
@@ -1203,10 +1253,15 @@ async function addAdminCustomStep(type) {
   const defaultMatCode = (type === 'BAKERY' && matKeys.length > 0) ? matKeys[0] : '';
   const defaultMat = defaultMatCode ? materials[defaultMatCode] : null;
 
+  let defaultStepName = `追加コード ${window.adminStepsData.length + 1}`;
+  if (type === 'BAKERY') {
+    defaultStepName = defaultMatCode ? (defaultMat?.memo ? `${defaultMatCode} (${defaultMat.memo})` : defaultMatCode) : `材料照合 ${window.adminStepsData.length + 1}`;
+  } else if (type === 'OCR') {
+    defaultStepName = `ラベル文字確認 ${window.adminStepsData.length + 1}`;
+  }
+
   window.adminStepsData.push({
-    name: type === 'BAKERY'
-      ? (defaultMatCode ? (defaultMat?.memo ? `${defaultMatCode} (${defaultMat.memo})` : defaultMatCode) : `材料照合 ${window.adminStepsData.length + 1}`)
-      : `追加コード ${window.adminStepsData.length + 1}`,
+    name: defaultStepName,
     type: type,
     materialCode: defaultMatCode,
     fromCsv: false,
@@ -1215,7 +1270,9 @@ async function addAdminCustomStep(type) {
     baseW: adminCanvas.width, baseH: adminCanvas.height,
     bakerySamples: [],
     bakeryThreshold: defaultMat ? (defaultMat.bakeryThreshold || 80) : 80,
-    expectedBarcode: ''
+    expectedBarcode: '',
+    expectedOcrText: type === 'OCR' ? window.adminActivePart : '',
+    ocrMatchMode: 'EXACT'
   });
   selectedAdminStepIdx = window.adminStepsData.length - 1;
   await autoSaveAdminProfile();
@@ -1266,7 +1323,27 @@ async function captureExpectedBarcodeFromCam(idx) {
   renderAdminStepsList();
 }
 
-// JSONバックアップ（材料マスターも一括で書き出し・復元）
+// ★ 設定画面のカメラ枠内からOCRで正解文字列を自動読み取りしてセットする関数 ★
+async function captureExpectedOcrFromCam(idx) {
+  if (!isCamRunning) return alert('先に「📷 設定用カメラ起動」を押してください');
+  const s = window.adminStepsData[idx];
+  if (!s) return;
+
+  const coords = getScaledStepCoords(s, adminCanvas.width, adminCanvas.height);
+  if (typeof recognizeOcrFromCanvasRect !== 'function') return;
+
+  const readText = await recognizeOcrFromCanvasRect(adminCanvas, coords.x, coords.y, coords.w, coords.h);
+  if (!readText) {
+    return alert('水色の枠内から文字を読み取れませんでした。文字を枠の中央に合わせて再度お試しください。');
+  }
+  s.expectedOcrText = readText;
+  playBuzzerPattern('OK');
+  await autoSaveAdminProfile();
+  renderAdminStepsList();
+  drawAdminCanvas();
+}
+
+// JSONバックアップ（材料マスター・OCRステップも一括で書き出し・復元）
 async function exportAllProfilesJson() {
   const data = {
     profiles: (await idbGet(STORAGE_KEY)) || {},
@@ -1356,6 +1433,8 @@ function setupKeyboardShortcuts() {
           const step = window.currentSteps[window.currentStepIdx];
           if (step && step.type === 'BARCODE') {
             verifyStepBarcodeValue(scanned, false, step);
+          } else if (step && step.type === 'OCR') {
+            verifyStepOcrValue(scanned, step);
           }
         }
       }
