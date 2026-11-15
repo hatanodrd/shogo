@@ -1,5 +1,5 @@
 // =========================================================
-// app_admin.js : 画面遷移・材料マスター(半透明シルエット保存対応)・OCR検査ステップ統合版
+// app_admin.js : 画面遷移・材料マスター画面(確実挿入対応)・OCR検査ステップ統合版
 // =========================================================
 window.adminActivePart = '';
 window.adminStepsData = [];
@@ -22,17 +22,28 @@ const mainCtx = mainCanvas.getContext('2d', { willReadFrequently: true });
 const adminCanvas = document.getElementById('adminCanvas');
 const adminCtx = adminCanvas.getContext('2d', { willReadFrequently: true });
 
-window.addEventListener('DOMContentLoaded', async () => {
+// DOMContentLoadedが既に発火済みでも確実に初期化を実行する安全設計
+async function initializeAppAdmin() {
+  if (window._appAdminInitialized) return;
+  window._appAdminInitialized = true;
+
   await loadSavedConfigs();
   disableRoiResizeControlsUI();
   injectMaterialMasterPageAndMenu();
   injectAdminPartSearchUI();
   injectAddOcrStepButtonUI();
+  hookCsvBuilderPreservingCustomSteps();
   setupKeyboardShortcuts();
   await updateProfileDropdowns();
   await updateMaterialMasterDropdowns();
   await initAI();
-});
+}
+
+if (document.readyState === 'loading') {
+  window.addEventListener('DOMContentLoaded', initializeAppAdmin);
+} else {
+  initializeAppAdmin();
+}
 
 function disableRoiResizeControlsUI() {
   if (adminCanvas) adminCanvas.style.cursor = 'default';
@@ -61,9 +72,67 @@ function injectAddOcrStepButtonUI() {
   }
 }
 
+// CSV再読込時に、手動追加したOCRステップやパン屋AIステップが消えないように保護するフック
+function hookCsvBuilderPreservingCustomSteps() {
+  if (typeof window.rebuildProfilesFromCsvTables === 'function' && !window._isCsvRebuildHooked) {
+    window.rebuildProfilesFromCsvTables = async function() {
+      const allParts = new Set([...Object.keys(csvTableA), ...Object.keys(csvTableB)]);
+      if (allParts.size === 0) return;
+
+      const stored = (await idbGet(STORAGE_KEY)) || {};
+      let updatedCount = 0;
+
+      allParts.forEach(partNo => {
+        const codesFromBottom = csvTableA[partNo] || [];
+        const refs = csvTableB[partNo] || [true, true, true];
+
+        const existingSteps = (stored[partNo] && stored[partNo].stepsData) ? stored[partNo].stepsData : [];
+        // CSV由来でない手動ステップ（パン屋AI・OCR・追加コード）をすべて保護
+        const customSteps = existingSteps.filter(s => !s.fromCsv);
+
+        const newCsvSteps = [];
+        for (let idx = 0; idx < 3; idx++) {
+          const hasRefInB = csvTableB[partNo] ? !!refs[idx] : true;
+          const codeVal = codesFromBottom[idx] || '';
+          if (hasRefInB && codeVal) {
+            newCsvSteps.push({
+              name: BOX_NAMES[idx],
+              type: 'BARCODE',
+              fromCsv: true,
+              refName: typeof refs[idx] === 'string' ? refs[idx] : '',
+              isFullFrame: true,
+              x: 0, y: 0, w: 640, h: 480,
+              baseW: 640, baseH: 480,
+              bakerySamples: [],
+              bakeryThreshold: 80,
+              expectedBarcode: codeVal
+            });
+          }
+        }
+
+        if (newCsvSteps.length > 0 || customSteps.length > 0) {
+          stored[partNo] = { stepsData: [...newCsvSteps, ...customSteps] };
+          updatedCount++;
+        }
+      });
+
+      await idbSet(STORAGE_KEY, stored);
+      await updateProfileDropdowns();
+      if (window.adminActivePart && stored[window.adminActivePart]) {
+        await loadAdminProfile(window.adminActivePart);
+      }
+      alert(`CSV連携完了：${updatedCount} 品番の照合ステップを自動生成・更新しました（手動追加したAI・OCRステップは保持されています）。`);
+    };
+    window._isCsvRebuildHooked = true;
+  }
+}
+
 async function navigateTo(pageId) {
   blurActiveInput();
   headlessScannerBuffer = '';
+
+  // メニューボタンや材料マスター画面が万一未生成ならここで確実に生成
+  injectMaterialMasterPageAndMenu();
 
   if ((pageId === 'partScanPage' || pageId === 'inspectPage') && typeof isWorkerRegistered === 'function') {
     if (!isWorkerRegistered()) {
@@ -168,35 +237,13 @@ function renderLoop() {
   requestAnimationFrame(renderLoop);
 }
 
-function drawSmartRoiOverlay(ctx, canvasW, canvasH, step, labelPrefix) {
-  const coords = getScaledStepCoords(step, canvasW, canvasH);
-  const color = step.type === 'BAKERY' ? '#ab47bc' : (step.type === 'OCR' ? '#00e5ff' : '#00e676');
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 6;
-  ctx.strokeRect(coords.x + 3, coords.y + 3, coords.w - 6, coords.h - 6);
-
-  const typeLabel = step.type === 'BAKERY' ? '🥐3連写＋ライバル比較AI' : (step.type === 'OCR' ? '🔤OCR文字照合' : '📷コード照合');
-  const labelText = `${labelPrefix}${step.name} (${typeLabel})`;
-  ctx.font = 'bold 15px sans-serif';
-  const textWidth = ctx.measureText(labelText).width;
-  const boxW = Math.min(canvasW - 12, textWidth + 18);
-  const boxH = 26;
-  const boxX = 8;
-  const boxY = canvasH - boxH - 8;
-
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.82)';
-  ctx.fillRect(boxX, boxY, boxW, boxH);
-  ctx.fillStyle = color;
-  ctx.fillText(labelText, boxX + 8, boxY + 18);
-}
-
 function drawInspectCanvas() {
   mainCtx.clearRect(0, 0, mainCanvas.width, mainCanvas.height);
   if (isCamRunning && video.readyState >= 2) {
     mainCtx.drawImage(video, 0, 0, mainCanvas.width, mainCanvas.height);
   }
   const step = window.currentSteps[window.currentStepIdx];
-  if (step) {
+  if (step && typeof drawSmartRoiOverlay === 'function') {
     drawSmartRoiOverlay(mainCtx, mainCanvas.width, mainCanvas.height, step, `Step ${window.currentStepIdx + 1}: `);
   }
 }
@@ -213,31 +260,41 @@ function drawAdminCanvas() {
     adminCtx.fillText('「📷 設定用カメラ起動」を押すと映像が表示されます', 40, adminCanvas.height / 2);
   }
   const step = window.adminStepsData[selectedAdminStepIdx];
-  if (step) {
+  if (step && typeof drawSmartRoiOverlay === 'function') {
     drawSmartRoiOverlay(adminCtx, adminCanvas.width, adminCanvas.height, step, `編集中 Step ${selectedAdminStepIdx + 1}: `);
   }
 }
 
 // =========================================================
-// 🥐 材料マスター登録・編集画面（半透明シルエット自動保存＆プレビュー対応）
+// 🥐 材料マスター登録・編集画面（メニューボタンの確実挿入対応）
 // =========================================================
 function injectMaterialMasterPageAndMenu() {
-  const topPage = document.getElementById('topMenuPage');
-  if (topPage && !document.getElementById('btnMenuMaterialMaster')) {
-    const menuGrid = topPage.querySelector('.menu-grid');
-    if (menuGrid) {
+  // 1. トップメニュー画面に「🥐 材料マスターの登録・編集」ボタンを確実に挿入
+  if (!document.getElementById('btnMenuMaterialMaster')) {
+    const topPage = document.getElementById('topMenuPage');
+    const adminMenuBtn = document.querySelector('#topMenuPage button[onclick*="adminPage"]') || document.querySelector('button[onclick*="adminPage"]');
+    const menuContainer = (topPage && topPage.querySelector('.menu-grid')) || (adminMenuBtn && adminMenuBtn.parentNode) || topPage;
+
+    if (menuContainer) {
       const matBtn = document.createElement('button');
       matBtn.id = 'btnMenuMaterialMaster';
+      matBtn.type = 'button';
       matBtn.className = 'btn btn-ai menu-hero-btn';
+      matBtn.style.cssText = 'width:100%; margin:6px 0;';
       matBtn.onclick = () => navigateTo('materialMasterPage');
       matBtn.innerHTML = `
         <span>🥐 パン屋AI 材料マスターの登録・編集（管理者用）</span>
         <span class="sub">材料品番のCSV一括取込・新規作成・検索・変更、良品マスター画像と👻半透明シルエットの撮影登録を行います（現在: <strong id="topMaterialCount">0</strong> 件）</span>
       `;
-      menuGrid.insertBefore(matBtn, menuGrid.children[1] || null);
+      if (adminMenuBtn && adminMenuBtn.parentNode === menuContainer) {
+        menuContainer.insertBefore(matBtn, adminMenuBtn);
+      } else {
+        menuContainer.appendChild(matBtn);
+      }
     }
   }
 
+  // 2. 材料マスター登録画面（#materialMasterPage）をbodyに生成
   if (!document.getElementById('materialMasterPage')) {
     const matPage = document.createElement('main');
     matPage.className = 'page-view';
@@ -768,7 +825,6 @@ async function updateMaterialThreshold(val) {
   await updateMaterialMasterDropdowns(false);
 }
 
-// ★ 良品マスター追加時、まだシルエット画像がなければ1枚目の構図を自動でシルエット登録 ★
 async function captureMaterialMasterSample() {
   if (!isCamRunning) return alert('先に「📷 材料撮影用カメラ起動」を押してください');
   if (!window.activeMaterialCode) return alert('材料品番を選択してください');
@@ -797,7 +853,6 @@ async function captureMaterialMasterSample() {
   drawMaterialCanvas();
 }
 
-// ★ シルエット画像だけを現在のカメラ映像で撮り直す関数 ★
 async function updateMaterialGhostImageOnly() {
   if (!isCamRunning) return alert('先に「📷 材料撮影用カメラ起動」を押してください');
   if (!window.activeMaterialCode) return alert('材料品番を選択してください');
@@ -906,7 +961,7 @@ function drawMaterialCanvas() {
   }
 
   const mat = window.materialMastersCache[window.activeMaterialCode];
-  if (mat) {
+  if (mat && typeof drawSmartRoiOverlay === 'function') {
     const dummyStep = {
       name: `${window.activeMaterialCode}${mat.memo ? ` (${mat.memo})` : ''}`,
       type: 'BAKERY',
@@ -973,22 +1028,31 @@ async function updateProfileDropdowns(fromSearchInput = false) {
 
   const allKeys = Object.keys(stored).sort();
 
-  document.getElementById('topRegisteredCount').textContent = allKeys.length;
+  const topRegEl = document.getElementById('topRegisteredCount');
+  if (topRegEl) topRegEl.textContent = allKeys.length;
   const cntA = Object.keys(csvTableA).length;
   const cntB = Object.keys(csvTableB).length;
-  document.getElementById('topBadgeA').textContent = cntA ? `${cntA}件読込済` : '未読込';
-  document.getElementById('topBadgeB').textContent = cntB ? `${cntB}件読込済` : '未読込';
+  const bdgA = document.getElementById('topBadgeA');
+  const bdgB = document.getElementById('topBadgeB');
+  if (bdgA) bdgA.textContent = cntA ? `${cntA}件読込済` : '未読込';
+  if (bdgB) bdgB.textContent = cntB ? `${cntB}件読込済` : '未読込';
 
-  document.getElementById('cardCsvA').classList.toggle('loaded', cntA > 0);
-  document.getElementById('cardCsvB').classList.toggle('loaded', cntB > 0);
-  document.getElementById('statusCsvA').textContent = cntA ? `読込済 (${cntA}品番)` : '未読込';
-  document.getElementById('statusCsvB').textContent = cntB ? `読込済 (${cntB}品番)` : '未読込';
+  const cardA = document.getElementById('cardCsvA');
+  const cardB = document.getElementById('cardCsvB');
+  if (cardA) cardA.classList.toggle('loaded', cntA > 0);
+  if (cardB) cardB.classList.toggle('loaded', cntB > 0);
+  const stA = document.getElementById('statusCsvA');
+  const stB = document.getElementById('statusCsvB');
+  if (stA) stA.textContent = cntA ? `読込済 (${cntA}品番)` : '未読込';
+  if (stB) stB.textContent = cntB ? `読込済 (${cntB}品番)` : '未読込';
 
   const wSel = document.getElementById('selWorkerProfile');
   const allOpts = allKeys.map(k => `<option value="${k}">${k} (${(stored[k].stepsData || []).length}ステップ)</option>`).join('');
-  wSel.innerHTML = '<option value="">-- 登録済み品番を選択 --</option>' + allOpts;
+  if (wSel) wSel.innerHTML = '<option value="">-- 登録済み品番を選択 --</option>' + allOpts;
 
   const aSel = document.getElementById('selAdminProfile');
+  if (!aSel) return;
+
   const qNorm = normalizeCodeString(adminPartSearchQuery);
   const qUnified = (typeof unifyAmbiguousCharsKey === 'function') ? unifyAmbiguousCharsKey(qNorm) : qNorm;
 
@@ -1095,6 +1159,7 @@ async function deleteAdminProfile() {
 
 function renderAdminStepsList() {
   const container = document.getElementById('adminStepsContainer');
+  if (!container) return;
   if (!window.adminActivePart) {
     container.innerHTML = '<p style="font-size:0.85rem; color:var(--muted);">上の検索欄またはプルダウンから製品品番を選択するか、CSVを取り込んでください。</p>';
     return;
@@ -1442,12 +1507,18 @@ function importAllProfilesJson(e) {
 }
 
 function setupKeyboardShortcuts() {
-  document.getElementById('externalPartInput').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); submitExternalPartInput(); }
-  });
-  document.getElementById('workerStepBarcodeInput').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); handleWorkerBarcodeInput(); }
-  });
+  const extInp = document.getElementById('externalPartInput');
+  if (extInp) {
+    extInp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); submitExternalPartInput(); }
+    });
+  }
+  const bcInp = document.getElementById('workerStepBarcodeInput');
+  if (bcInp) {
+    bcInp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); handleWorkerBarcodeInput(); }
+    });
+  }
   const workerTopInp = document.getElementById('txtWorkerInput');
   if (workerTopInp) {
     workerTopInp.addEventListener('keydown', (e) => {
@@ -1458,7 +1529,8 @@ function setupKeyboardShortcuts() {
   window.addEventListener('keydown', async (e) => {
     const tag = (e.target && e.target.tagName) ? e.target.tagName : '';
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
-    if (document.getElementById('ngOverlay').style.display === 'flex') return;
+    const ngOv = document.getElementById('ngOverlay');
+    if (ngOv && ngOv.style.display === 'flex') return;
 
     if (e.code === 'Space' && activePage === 'inspectPage') {
       e.preventDefault();
