@@ -1,5 +1,5 @@
 // =========================================================
-// config_audio.js : 定数・IndexedDB・文字同一視・半透明シルエット設定・作業者QR・音声制御
+// config_audio.js : 定数・IndexedDB・GASクラウド自動同期・文字同一視・シルエット・音声制御
 // =========================================================
 const DB_NAME = 'pokayoke_idb_v1';
 const DB_STORE = 'app_data';
@@ -15,6 +15,7 @@ const ONE_I_CONFIG_KEY = 'pokayoke_ignore_one_i_v5';
 const OCR_CONFIG_KEY = 'pokayoke_ocr_default_config_v5';
 const GHOST_CONFIG_KEY = 'pokayoke_ghost_guide_config_v5';
 const AUDIO_CONFIG_KEY = 'pokayoke_audio_config_v5';
+const GAS_SYNC_CONFIG_KEY = 'pokayoke_gas_sync_config_v5';
 const LOG_STORAGE_KEY = 'pokayoke_inspection_logs_v5';
 const BOX_NAMES = ['外箱', '内箱', '小箱'];
 
@@ -22,29 +23,32 @@ let csvTableA = {};
 let csvTableB = {};
 let qrRangeConfig = { start: null, end: null };
 
-// 大文字・小文字を無視するかどうかの設定（初期値: true = 区別しない）
 let isIgnoreCase = true;
-
-// OCRで「O（オー）」と「0（ゼロ）」を同一視するかどうかの設定（初期値: true = 区別しない）
 let isIgnoreOandZero = true;
-
-// OCRで「1（イチ）」と「I（アイ）/ l（エル）」を同一視するかどうかの設定（初期値: true = 区別しない）
 let isIgnoreOneAndI = true;
 
-// OCR初期値設定（横幅・高さ・影除去感度）
 let ocrDefaultConfig = {
   width: 75,
   height: 14,
   shadow: 14
 };
 
-// パン屋AI 半透明シルエット（ゴーストガイド）設定（ON/OFF・不透明度%）
 let ghostGuideConfig = {
   enabled: true,
   opacity: 35
 };
 
-// 音声・ブザー設定
+// ★ Google Apps Script (GAS) クラウド自動同期設定 ★
+let gasSyncConfig = {
+  url: '',
+  autoSyncOnStart: true,
+  autoPushOnSave: true,
+  lastRemoteTimestamp: 0,
+  lastSyncStatus: '未設定'
+};
+let gasAutoPushTimer = null;
+let lastGasPullCheckTime = 0;
+
 let isSpeechEnabled = true;
 let audioConfig = {
   voiceURI: '',
@@ -75,7 +79,6 @@ let activePage = 'topMenuPage';
 let camStream = null;
 let isCamRunning = false;
 
-// 作業者QRスキャナ制御用
 let workerQrScanner = null;
 let isWorkerQrLocked = false;
 let pendingNavigatePageAfterWorker = null;
@@ -97,26 +100,29 @@ function openAppDatabase() {
   });
 }
 
-async function idbGet(key) {
+// クラウド同期・バックアップ用の生データ取得（重複キーを付与しない）
+async function idbGetRaw(key) {
   const db = await openAppDatabase();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(DB_STORE, 'readonly');
     const store = tx.objectStore(DB_STORE);
     const req = store.get(key);
-    req.onsuccess = () => {
-      let res = req.result !== undefined ? req.result : null;
-      if ((key === STORAGE_KEY || key === MATERIAL_MASTER_KEY) && res && typeof res === 'object' && isIgnoreCase) {
-        const clone = Object.assign({}, res);
-        Object.keys(res).forEach(k => {
-          const upKey = String(k).normalize('NFKC').trim().toUpperCase();
-          if (!clone[upKey]) clone[upKey] = res[k];
-        });
-        return resolve(clone);
-      }
-      resolve(res);
-    };
+    req.onsuccess = () => resolve(req.result !== undefined ? req.result : null);
     req.onerror = () => reject(req.error);
   });
+}
+
+async function idbGet(key) {
+  const res = await idbGetRaw(key);
+  if ((key === STORAGE_KEY || key === MATERIAL_MASTER_KEY) && res && typeof res === 'object' && isIgnoreCase) {
+    const clone = Object.assign({}, res);
+    Object.keys(res).forEach(k => {
+      const upKey = String(k).normalize('NFKC').trim().toUpperCase();
+      if (!clone[upKey]) clone[upKey] = res[k];
+    });
+    return clone;
+  }
+  return res;
 }
 
 async function idbSet(key, val) {
@@ -145,6 +151,220 @@ function blurActiveInput() {
   if (document.activeElement && ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName)) {
     document.activeElement.blur();
   }
+}
+
+// =========================================================
+// ☁️ Google Apps Script (GAS) クラウド自動同期エンジン
+// =========================================================
+function showSyncToastBanner(message, type = 'info') {
+  let toast = document.getElementById('gasSyncToastBanner');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'gasSyncToastBanner';
+    toast.style.cssText = 'position:fixed; bottom:14px; right:14px; z-index:1200; padding:10px 14px; border-radius:8px; font-size:0.82rem; font-weight:700; box-shadow:0 4px 12px rgba(0,0,0,0.22); transition:opacity 0.3s; max-width:340px; pointer-events:none;';
+    document.body.appendChild(toast);
+  }
+  if (type === 'ok') {
+    toast.style.background = '#1b5e20';
+    toast.style.color = '#ffffff';
+  } else if (type === 'ng') {
+    toast.style.background = '#b71c1c';
+    toast.style.color = '#ffffff';
+  } else {
+    toast.style.background = '#0d47a1';
+    toast.style.color = '#ffffff';
+  }
+  toast.textContent = message;
+  toast.style.opacity = '1';
+
+  clearTimeout(window._gasToastTimer);
+  window._gasToastTimer = setTimeout(() => {
+    toast.style.opacity = '0';
+  }, 3500);
+}
+
+function updateGasSyncStatusUI(statusText, isError = false) {
+  gasSyncConfig.lastSyncStatus = statusText;
+  localStorage.setItem(GAS_SYNC_CONFIG_KEY, JSON.stringify(gasSyncConfig));
+  const lbl = document.getElementById('lblGasSyncStatus');
+  if (lbl) {
+    lbl.textContent = statusText;
+    lbl.style.color = isError ? 'var(--danger)' : 'var(--success)';
+  }
+}
+
+function saveGasSyncSettings(testConnection = false) {
+  blurActiveInput();
+  const urlInp = document.getElementById('txtGasSyncUrl');
+  const chkStart = document.getElementById('chkGasAutoStart');
+  const chkPush = document.getElementById('chkGasAutoPush');
+
+  const url = (urlInp ? urlInp.value : gasSyncConfig.url).trim();
+  if (url && !url.startsWith('https://script.google.com/')) {
+    alert('Google Apps Script のウェブアプリURL（https://script.google.com/... で始まるURL）を入力してください。');
+    return;
+  }
+
+  gasSyncConfig.url = url;
+  if (chkStart) gasSyncConfig.autoSyncOnStart = chkStart.checked;
+  if (chkPush) gasSyncConfig.autoPushOnSave = chkPush.checked;
+  localStorage.setItem(GAS_SYNC_CONFIG_KEY, JSON.stringify(gasSyncConfig));
+
+  if (!url) {
+    updateGasSyncStatusUI('URL未登録（同期オフ）', false);
+    if (testConnection) alert('同期URLをクリアしました。');
+    return;
+  }
+
+  if (testConnection) {
+    syncFromGasCloud(false);
+  }
+}
+
+// クラウド（Googleドライブ）から最新データを取得してローカルへ反映
+async function syncFromGasCloud(silent = true) {
+  if (!gasSyncConfig.url) {
+    if (!silent) alert('先にGoogle Apps ScriptのウェブアプリURLを入力してください。');
+    return false;
+  }
+
+  lastGasPullCheckTime = Date.now();
+  if (!silent) showSyncToastBanner('☁️ Googleドライブから最新データを確認中...', 'info');
+
+  try {
+    const fetchUrl = gasSyncConfig.url + (gasSyncConfig.url.includes('?') ? '&' : '?') + 't=' + Date.now();
+    const res = await fetch(fetchUrl, { method: 'GET', redirect: 'follow' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    const obj = await res.json();
+    if (!obj || obj.status === 'empty') {
+      const msg = `接続成功（クラウド上にまだデータがありません） [${new Date().toLocaleTimeString('ja-JP')}]`;
+      updateGasSyncStatusUI(msg, false);
+      if (!silent) alert('Google Apps Scriptへの接続に成功しました！\nまだGoogleドライブにデータが保存されていないため、「📤 今すぐクラウドへ送信」を押して初期データをアップロードしてください。');
+      return true;
+    }
+
+    const remoteTs = Number(obj.syncTimestamp || 0);
+    const localTs = Number(gasSyncConfig.lastRemoteTimestamp || 0);
+
+    // silent（自動同期）時は、クラウド側が新しい場合のみ上書きする
+    if (silent && remoteTs > 0 && remoteTs <= localTs) {
+      updateGasSyncStatusUI(`最新状態と同期済み (${obj.updatedAtStr || new Date().toLocaleTimeString('ja-JP')})`, false);
+      return true;
+    }
+
+    if (obj.profiles) await idbSet(STORAGE_KEY, obj.profiles);
+    if (obj.materialMasters) {
+      await idbSet(MATERIAL_MASTER_KEY, obj.materialMasters);
+      window.materialMastersCache = obj.materialMasters;
+    }
+    if (obj.csvTableA) { csvTableA = obj.csvTableA; await idbSet(TABLE_A_KEY, csvTableA); }
+    if (obj.csvTableB) { csvTableB = obj.csvTableB; await idbSet(TABLE_B_KEY, csvTableB); }
+    if (obj.qrRangeConfig) {
+      qrRangeConfig = obj.qrRangeConfig;
+      localStorage.setItem(QR_CONFIG_KEY, JSON.stringify(qrRangeConfig));
+      if (document.getElementById('numQrStart')) document.getElementById('numQrStart').value = qrRangeConfig.start || '';
+      if (document.getElementById('numQrEnd')) document.getElementById('numQrEnd').value = qrRangeConfig.end || '';
+    }
+    if (obj.audioConfig) {
+      audioConfig = Object.assign(audioConfig, obj.audioConfig);
+      localStorage.setItem(AUDIO_CONFIG_KEY, JSON.stringify(audioConfig));
+      applyAudioConfigToUI();
+    }
+
+    if (remoteTs > 0) {
+      gasSyncConfig.lastRemoteTimestamp = remoteTs;
+    }
+    const nowStr = obj.updatedAtStr || new Date().toLocaleString('ja-JP');
+    updateGasSyncStatusUI(`✅ 同期完了 (${nowStr} 更新分を受信)`, false);
+
+    if (typeof updateProfileDropdowns === 'function') await updateProfileDropdowns(false);
+    if (typeof updateMaterialMasterDropdowns === 'function') await updateMaterialMasterDropdowns(false);
+    if (window.adminActivePart && typeof loadAdminProfile === 'function') {
+      await loadAdminProfile(window.adminActivePart);
+    }
+    if (window.activeMaterialCode && typeof loadMaterialMaster === 'function') {
+      await loadMaterialMaster(window.activeMaterialCode);
+    }
+
+    showSyncToastBanner(`☁️ クラウドから最新マスタを受信しました (${nowStr})`, 'ok');
+    if (!silent) {
+      playBuzzerPattern('OK');
+      alert(`☁️ Googleドライブから最新データの同期が完了しました！\n更新日時: ${nowStr}`);
+    }
+    return true;
+  } catch (err) {
+    console.warn('GAS Sync Pull Error:', err);
+    updateGasSyncStatusUI(`⚠️ 受信エラー: ${err.message}`, true);
+    if (!silent) {
+      alert(`Googleドライブからの同期に失敗しました。\nURLとGASの「アクセスできるユーザー：全員」設定を確認してください。\n詳細: ${err.message}`);
+    }
+    return false;
+  }
+}
+
+// 現在の全データをクラウド（Googleドライブ）へアップロード
+async function pushToGasCloud(silent = true) {
+  if (!gasSyncConfig.url) {
+    if (!silent) alert('先にGoogle Apps ScriptのウェブアプリURLを入力してください。');
+    return false;
+  }
+
+  if (!silent) showSyncToastBanner('☁️ Googleドライブへ全データを送信中...', 'info');
+
+  try {
+    const syncTs = Date.now();
+    const updatedStr = new Date().toLocaleString('ja-JP');
+    const payload = {
+      syncTimestamp: syncTs,
+      updatedAtStr: updatedStr,
+      profiles: (await idbGetRaw(STORAGE_KEY)) || {},
+      materialMasters: (await idbGetRaw(MATERIAL_MASTER_KEY)) || {},
+      csvTableA,
+      csvTableB,
+      qrRangeConfig,
+      audioConfig
+    };
+
+    // GASのCORSプリフライトを回避するため text/plain でPOST送信
+    const res = await fetch(gasSyncConfig.url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload),
+      redirect: 'follow'
+    });
+
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const result = await res.json();
+    if (result && result.status === 'ok') {
+      gasSyncConfig.lastRemoteTimestamp = syncTs;
+      updateGasSyncStatusUI(`✅ クラウド保存完了 (${updatedStr})`, false);
+      showSyncToastBanner(`☁️ Googleドライブへ自動保存しました (${updatedStr})`, 'ok');
+      if (!silent) {
+        playBuzzerPattern('OK');
+        alert(`☁️ 現在の全マスター・設定をGoogleドライブへ送信しました！\n他デバイスでも自動的に最新データが読み込まれます。`);
+      }
+      return true;
+    } else {
+      throw new Error('GAS応答エラー');
+    }
+  } catch (err) {
+    console.warn('GAS Sync Push Error:', err);
+    updateGasSyncStatusUI(`⚠️ 送信エラー: ${err.message}`, true);
+    if (!silent) {
+      alert(`Googleドライブへの送信に失敗しました。\n詳細: ${err.message}`);
+    }
+    return false;
+  }
+}
+
+// 保存操作時のデバウンス自動送信トリガー（連続操作を1.2秒にまとめて1回送信）
+function triggerAutoPushToGas() {
+  if (!gasSyncConfig.url || !gasSyncConfig.autoPushOnSave) return;
+  clearTimeout(gasAutoPushTimer);
+  gasAutoPushTimer = setTimeout(() => {
+    pushToGasCloud(true);
+  }, 1200);
 }
 
 // =========================================================
@@ -372,7 +592,7 @@ async function stopWorkerQrCamera() {
 }
 
 // =========================================================
-// ⚙️ 管理画面への拡張設定UI（文字同一視 ／ OCR初期値 ／ 半透明シルエット設定）自動挿入
+// ⚙️ 管理画面への拡張設定UI（GASクラウド同期 ／ 文字同一視 ／ シルエット ／ OCR初期値）自動挿入
 // =========================================================
 function injectCustomAdminSettingsUI() {
   const numQrStart = document.getElementById('numQrStart');
@@ -383,6 +603,47 @@ function injectCustomAdminSettingsUI() {
   const titleEl = card.querySelector('.card-title');
   if (titleEl) {
     titleEl.textContent = '③ システム共通・読取ルール設定（QR桁数 ／ 文字同一視 ／ OCR初期値 ／ 👻半透明シルエット）';
+  }
+
+  // ★ Googleドライブ (GAS) マルチデバイス自動同期設定カードを挿入 ★
+  if (!document.getElementById('gasCloudSyncCard')) {
+    const syncCard = document.createElement('div');
+    syncCard.id = 'gasCloudSyncCard';
+    syncCard.className = 'card';
+    syncCard.style.border = '2px solid #90caf9';
+    syncCard.innerHTML = `
+      <div class="card-title" style="color:#0d47a1; border-left-color:#0d47a1;">
+        ☁️ Googleドライブ（GAS）マルチデバイス自動同期設定
+      </div>
+      <p style="font-size:0.82rem; color:var(--muted); margin-bottom:8px;">
+        発行した Google Apps Script のウェブアプリURL（<code>https://script.google.com/macros/s/.../exec</code>）を登録すると、複数端末間で<strong>材料マスター・製品ステップ・各種設定が自動的にクラウド同期</strong>されます。
+      </p>
+
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+        <input type="text" id="txtGasSyncUrl" placeholder="https://script.google.com/macros/s/〇〇〇/exec を貼り付け" style="flex:1; min-width:240px;">
+        <button type="button" class="btn btn-primary" onclick="saveGasSyncSettings(true)">💾 URL保存＆テスト接続</button>
+      </div>
+
+      <div style="display:flex; gap:14px; flex-wrap:wrap; align-items:center; background:#f0f7ff; padding:8px 12px; border-radius:8px; margin-bottom:8px; font-size:0.83rem;">
+        <label style="display:flex; align-items:center; gap:5px; font-weight:700; cursor:pointer;">
+          <input type="checkbox" id="chkGasAutoStart" checked onchange="saveGasSyncSettings(false)"> 起動時・トップ復帰時に自動で最新データを受信
+        </label>
+        <label style="display:flex; align-items:center; gap:5px; font-weight:700; cursor:pointer;">
+          <input type="checkbox" id="chkGasAutoPush" checked onchange="saveGasSyncSettings(false)"> マスター・設定の保存時に自動でクラウドへ送信
+        </label>
+      </div>
+
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+        <div style="font-size:0.8rem; font-weight:700;">
+          同期ステータス: <span id="lblGasSyncStatus" style="color:var(--muted);">未設定</span>
+        </div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button type="button" class="btn btn-success" style="padding:6px 12px; font-size:0.82rem;" onclick="syncFromGasCloud(false)">📥 今すぐクラウドから受信</button>
+          <button type="button" class="btn btn-dark" style="padding:6px 12px; font-size:0.82rem;" onclick="pushToGasCloud(false)">📤 今すぐクラウドへ送信</button>
+        </div>
+      </div>
+    `;
+    card.parentNode.insertBefore(syncCard, card.nextSibling);
   }
 
   if (!document.getElementById('ignoreCaseSettingRow')) {
@@ -485,11 +746,24 @@ function injectCustomAdminSettingsUI() {
     card.appendChild(ocrRow);
   }
 
+  applyGasSyncConfigToUI();
   updateIgnoreCaseUI();
   updateIgnoreOZeroUI();
   updateIgnoreOneIUI();
   updateGhostGuideUI();
   applyOcrDefaultToUI();
+}
+
+function applyGasSyncConfigToUI() {
+  const urlInp = document.getElementById('txtGasSyncUrl');
+  const chkStart = document.getElementById('chkGasAutoStart');
+  const chkPush = document.getElementById('chkGasAutoPush');
+  const lbl = document.getElementById('lblGasSyncStatus');
+
+  if (urlInp) urlInp.value = gasSyncConfig.url || '';
+  if (chkStart) chkStart.checked = gasSyncConfig.autoSyncOnStart !== false;
+  if (chkPush) chkPush.checked = gasSyncConfig.autoPushOnSave !== false;
+  if (lbl) lbl.textContent = gasSyncConfig.url ? (gasSyncConfig.lastSyncStatus || '設定済み') : '未設定';
 }
 
 function updateIgnoreCaseUI() {
@@ -674,6 +948,9 @@ async function loadSavedConfigs() {
     const savedGhost = JSON.parse(localStorage.getItem(GHOST_CONFIG_KEY) || 'null');
     if (savedGhost) ghostGuideConfig = Object.assign(ghostGuideConfig, savedGhost);
 
+    const savedGas = JSON.parse(localStorage.getItem(GAS_SYNC_CONFIG_KEY) || 'null');
+    if (savedGas) gasSyncConfig = Object.assign(gasSyncConfig, savedGas);
+
     const savedAudio = JSON.parse(localStorage.getItem(AUDIO_CONFIG_KEY) || 'null');
     if (savedAudio) audioConfig = Object.assign(audioConfig, savedAudio);
 
@@ -693,7 +970,6 @@ async function loadSavedConfigs() {
   initSpeechVoices();
 }
 
-// 音声・ブザー制御
 function initSpeechVoices() {
   if (!('speechSynthesis' in window)) return;
   const populate = () => {
@@ -774,6 +1050,7 @@ function saveAudioSettings() {
   audioConfig.ignoreOandZero = isIgnoreOandZero;
   audioConfig.ignoreOneAndI = isIgnoreOneAndI;
   localStorage.setItem(AUDIO_CONFIG_KEY, JSON.stringify(audioConfig));
+  triggerAutoPushToGas();
 }
 
 function speakText(text) {
@@ -879,6 +1156,7 @@ function saveQrRangeConfig() {
     end: (!isNaN(e) && e >= 1) ? e : null
   };
   localStorage.setItem(QR_CONFIG_KEY, JSON.stringify(qrRangeConfig));
+  triggerAutoPushToGas();
   alert(`QRコード読取範囲を保存しました（開始: ${qrRangeConfig.start || '先頭'} 〜 終了: ${qrRangeConfig.end || '末尾'}）`);
 }
 
@@ -888,6 +1166,7 @@ function resetQrRangeConfig() {
   document.getElementById('numQrStart').value = '';
   document.getElementById('numQrEnd').value = '';
   localStorage.setItem(QR_CONFIG_KEY, JSON.stringify(qrRangeConfig));
+  triggerAutoPushToGas();
   alert('QRコードの桁数設定を解除しました（全桁読取）。');
 }
 
