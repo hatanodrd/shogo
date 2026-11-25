@@ -1,11 +1,10 @@
 // =========================================================
-// app_admin.js : 画面遷移・材料マスター画面(確実挿入対応)・OCR検査ステップ統合版
+// app_admin.js : 画面遷移・GAS自動同期フック・材料マスター・OCR検査ステップ統合版
 // =========================================================
 window.adminActivePart = '';
 window.adminStepsData = [];
 let selectedAdminStepIdx = 0;
 
-// 材料マスター管理用の状態変数
 window.materialMastersCache = {};
 window.activeMaterialCode = '';
 let materialSearchQuery = '';
@@ -13,7 +12,6 @@ let materialSearchQuery = '';
 let headlessScannerBuffer = '';
 let headlessScannerLastTime = 0;
 
-// 製品設定画面の品番検索キーワード
 let adminPartSearchQuery = '';
 
 const video = document.getElementById('videoSource');
@@ -22,7 +20,6 @@ const mainCtx = mainCanvas.getContext('2d', { willReadFrequently: true });
 const adminCanvas = document.getElementById('adminCanvas');
 const adminCtx = adminCanvas.getContext('2d', { willReadFrequently: true });
 
-// DOMContentLoadedが既に発火済みでも確実に初期化を実行する安全設計
 async function initializeAppAdmin() {
   if (window._appAdminInitialized) return;
   window._appAdminInitialized = true;
@@ -36,6 +33,12 @@ async function initializeAppAdmin() {
   setupKeyboardShortcuts();
   await updateProfileDropdowns();
   await updateMaterialMasterDropdowns();
+
+  // ★ 起動時にGASクラウド自動同期が有効なら最新マスタを自動受信 ★
+  if (typeof gasSyncConfig !== 'undefined' && gasSyncConfig.url && gasSyncConfig.autoSyncOnStart) {
+    syncFromGasCloud(true);
+  }
+
   await initAI();
 }
 
@@ -72,7 +75,6 @@ function injectAddOcrStepButtonUI() {
   }
 }
 
-// CSV再読込時に、手動追加したOCRステップやパン屋AIステップが消えないように保護するフック
 function hookCsvBuilderPreservingCustomSteps() {
   if (typeof window.rebuildProfilesFromCsvTables === 'function' && !window._isCsvRebuildHooked) {
     window.rebuildProfilesFromCsvTables = async function() {
@@ -87,7 +89,6 @@ function hookCsvBuilderPreservingCustomSteps() {
         const refs = csvTableB[partNo] || [true, true, true];
 
         const existingSteps = (stored[partNo] && stored[partNo].stepsData) ? stored[partNo].stepsData : [];
-        // CSV由来でない手動ステップ（パン屋AI・OCR・追加コード）をすべて保護
         const customSteps = existingSteps.filter(s => !s.fromCsv);
 
         const newCsvSteps = [];
@@ -121,6 +122,7 @@ function hookCsvBuilderPreservingCustomSteps() {
       if (window.adminActivePart && stored[window.adminActivePart]) {
         await loadAdminProfile(window.adminActivePart);
       }
+      if (typeof triggerAutoPushToGas === 'function') triggerAutoPushToGas();
       alert(`CSV連携完了：${updatedCount} 品番の照合ステップを自動生成・更新しました（手動追加したAI・OCRステップは保持されています）。`);
     };
     window._isCsvRebuildHooked = true;
@@ -131,7 +133,6 @@ async function navigateTo(pageId) {
   blurActiveInput();
   headlessScannerBuffer = '';
 
-  // メニューボタンや材料マスター画面が万一未生成ならここで確実に生成
   injectMaterialMasterPageAndMenu();
 
   if ((pageId === 'partScanPage' || pageId === 'inspectPage') && typeof isWorkerRegistered === 'function') {
@@ -151,6 +152,12 @@ async function navigateTo(pageId) {
 
   if (pageId === 'topMenuPage' && typeof clearWorkerRegistration === 'function') {
     clearWorkerRegistration();
+    // トップ画面に戻った際、前回チェックから15秒以上経過していればクラウド更新を確認
+    if (typeof gasSyncConfig !== 'undefined' && gasSyncConfig.url && gasSyncConfig.autoSyncOnStart) {
+      if (Date.now() - lastGasPullCheckTime > 15000) {
+        syncFromGasCloud(true);
+      }
+    }
   }
 
   document.querySelectorAll('.page-view').forEach(p => p.classList.remove('active'));
@@ -266,10 +273,9 @@ function drawAdminCanvas() {
 }
 
 // =========================================================
-// 🥐 材料マスター登録・編集画面（メニューボタンの確実挿入対応）
+// 🥐 材料マスター登録・編集画面
 // =========================================================
 function injectMaterialMasterPageAndMenu() {
-  // 1. トップメニュー画面に「🥐 材料マスターの登録・編集」ボタンを確実に挿入
   if (!document.getElementById('btnMenuMaterialMaster')) {
     const topPage = document.getElementById('topMenuPage');
     const adminMenuBtn = document.querySelector('#topMenuPage button[onclick*="adminPage"]') || document.querySelector('button[onclick*="adminPage"]');
@@ -294,17 +300,15 @@ function injectMaterialMasterPageAndMenu() {
     }
   }
 
-  // 2. 材料マスター登録画面（#materialMasterPage）をbodyに生成
   if (!document.getElementById('materialMasterPage')) {
     const matPage = document.createElement('main');
     matPage.className = 'page-view';
     matPage.id = 'materialMasterPage';
     matPage.innerHTML = `
       <div class="nav-banner" style="background:var(--ai-light); color:var(--ai-color); border-left-color:var(--ai-color);">
-        🥐 パン屋AI 材料マスター登録・編集画面（👻半透明シルエットガイド ＆ 3連写＋ライバル相対比較に対応）
+        🥐 パン屋AI 材料マスター登録・編集画面（👻半透明シルエットガイド ＆ ☁️Googleドライブ自動同期に対応）
       </div>
 
-      <!-- 材料マスターCSV一括取込カード -->
       <div class="card">
         <div class="card-title" style="color:var(--ai-color); border-left-color:var(--ai-color);">
           📄 材料マスター（品番・名称メモ）のCSV一括取込 ／ 一覧CSV出力（UTF-8・Shift-JIS自動判別）
@@ -354,7 +358,6 @@ function injectMaterialMasterPageAndMenu() {
         </div>
       </div>
 
-      <!-- ② カメラ映像 ＆ 良品マスター登録エリア -->
       <div class="card">
         <div class="card-title" style="color:var(--ai-color); border-left-color:var(--ai-color);">
           ② 良品マスター画像 ＆ 👻 半透明シルエットの撮影・変更（カメラ枠全体 100% 固定）
@@ -381,7 +384,7 @@ function injectMaterialMasterPageAndMenu() {
               <div style="font-size:0.82rem; color:var(--muted); line-height:1.5;">
                 💡 <strong>半透明シルエット（👻ゴーストガイド）について:</strong><br>
                 ・1枚目の良品を追加した際、自動的にその構図が「半透明シルエット」として保存されます。<br>
-                ・シルエットのON/OFFや透明度（濃さ%）は「⚙️ 製品ごとの設定画面」の「③ システム共通・読取ルール設定」でいつでも自由に変更できます。
+                ・GASクラウド同期がONの場合、登録した良品・シルエットデータは自動的に他端末へも配信されます。
               </div>
               <div style="margin-top:10px; display:flex; justify-content:flex-end;">
                 <button type="button" class="btn btn-dark" onclick="navigateTo('adminPage')">⚙️ 製品ごとの設定画面へ移動 ➔</button>
@@ -430,7 +433,7 @@ async function importMaterialMastersFromCsvText(text) {
     return alert('CSVに読み込むデータ行がありません。');
   }
 
-  const materials = (await idbGet(MATERIAL_MASTER_KEY)) || {};
+  const materials = (await idbGetRaw(MATERIAL_MASTER_KEY)) || {};
   let addedCount = 0;
   let updatedCount = 0;
   let firstImportedCode = '';
@@ -477,6 +480,7 @@ async function importMaterialMastersFromCsvText(text) {
 
   await idbSet(MATERIAL_MASTER_KEY, materials);
   window.materialMastersCache = materials;
+  triggerAutoPushToGas();
   await clearMaterialSearch();
 
   if (firstImportedCode && materials[firstImportedCode]) {
@@ -494,7 +498,7 @@ async function importMaterialMastersFromCsvText(text) {
 
 async function exportMaterialListCsv() {
   blurActiveInput();
-  const materials = (await idbGet(MATERIAL_MASTER_KEY)) || {};
+  const materials = (await idbGetRaw(MATERIAL_MASTER_KEY)) || {};
   const keys = Object.keys(materials).sort();
   if (keys.length === 0) return alert('登録されている材料マスターがありません。');
 
@@ -518,7 +522,7 @@ async function exportMaterialListCsv() {
 
 async function resetAllMaterialMasters() {
   blurActiveInput();
-  const materials = (await idbGet(MATERIAL_MASTER_KEY)) || {};
+  const materials = (await idbGetRaw(MATERIAL_MASTER_KEY)) || {};
   const total = Object.keys(materials).length;
   if (total === 0) return alert('削除する材料マスターがありません。');
 
@@ -547,6 +551,7 @@ async function resetAllMaterialMasters() {
   const fileInp = document.getElementById('fileMaterialCsv');
   if (fileInp) fileInp.value = '';
 
+  triggerAutoPushToGas();
   await updateMaterialMasterDropdowns(false);
   renderMaterialEditorPanel();
   drawMaterialCanvas();
@@ -561,7 +566,7 @@ async function clearMaterialSearch() {
 }
 
 async function updateMaterialMasterDropdowns(fromSearch = false) {
-  const materials = (await idbGet(MATERIAL_MASTER_KEY)) || {};
+  const materials = (await idbGetRaw(MATERIAL_MASTER_KEY)) || {};
   window.materialMastersCache = materials;
   const allKeys = Object.keys(materials).sort();
 
@@ -618,7 +623,7 @@ async function createOrSwitchMaterialMaster() {
   const code = normalizeCodeString(rawName);
   if (!code) return alert('新規作成または切り替える「材料品番」を入力してください');
 
-  const materials = (await idbGet(MATERIAL_MASTER_KEY)) || {};
+  const materials = (await idbGetRaw(MATERIAL_MASTER_KEY)) || {};
   if (!materials[code]) {
     materials[code] = {
       code: code,
@@ -632,6 +637,7 @@ async function createOrSwitchMaterialMaster() {
       updatedAt: new Date().toLocaleString('ja-JP')
     };
     await idbSet(MATERIAL_MASTER_KEY, materials);
+    triggerAutoPushToGas();
   }
   document.getElementById('txtNewMaterialCode').value = '';
   await clearMaterialSearch();
@@ -646,7 +652,7 @@ async function loadMaterialMaster(code) {
     drawMaterialCanvas();
     return;
   }
-  const materials = (await idbGet(MATERIAL_MASTER_KEY)) || {};
+  const materials = (await idbGetRaw(MATERIAL_MASTER_KEY)) || {};
   window.materialMastersCache = materials;
   if (!materials[code]) return;
   window.activeMaterialCode = code;
@@ -658,7 +664,7 @@ async function loadMaterialMaster(code) {
 
 async function saveCurrentMaterialMaster() {
   if (!window.activeMaterialCode) return;
-  const materials = (await idbGet(MATERIAL_MASTER_KEY)) || {};
+  const materials = (await idbGetRaw(MATERIAL_MASTER_KEY)) || {};
   const cur = materials[window.activeMaterialCode];
   if (!cur) return;
 
@@ -669,6 +675,7 @@ async function saveCurrentMaterialMaster() {
 
   await idbSet(MATERIAL_MASTER_KEY, materials);
   window.materialMastersCache = materials;
+  triggerAutoPushToGas();
   await updateMaterialMasterDropdowns(false);
 }
 
@@ -681,7 +688,7 @@ async function renameCurrentMaterialMaster() {
 
   if (!newCode) return alert('変更後の材料品番を入力してください');
 
-  const materials = (await idbGet(MATERIAL_MASTER_KEY)) || {};
+  const materials = (await idbGetRaw(MATERIAL_MASTER_KEY)) || {};
   if (!materials[oldCode]) return;
 
   if (newCode !== oldCode && materials[newCode]) {
@@ -698,7 +705,7 @@ async function renameCurrentMaterialMaster() {
     materials[newCode] = matData;
     delete materials[oldCode];
 
-    const profiles = (await idbGet(STORAGE_KEY)) || {};
+    const profiles = (await idbGetRaw(STORAGE_KEY)) || {};
     let linkedUpdated = 0;
     Object.keys(profiles).forEach(pKey => {
       (profiles[pKey].stepsData || []).forEach(s => {
@@ -716,6 +723,7 @@ async function renameCurrentMaterialMaster() {
 
   await idbSet(MATERIAL_MASTER_KEY, materials);
   window.activeMaterialCode = newCode;
+  triggerAutoPushToGas();
   await updateMaterialMasterDropdowns(false);
   renderMaterialEditorPanel();
   drawMaterialCanvas();
@@ -727,11 +735,12 @@ async function deleteCurrentMaterialMaster() {
   if (!window.activeMaterialCode) return alert('削除する材料マスターを選択してください');
   if (!confirm(`材料マスター [ ${window.activeMaterialCode} ] を削除しますか？`)) return;
 
-  const materials = (await idbGet(MATERIAL_MASTER_KEY)) || {};
+  const materials = (await idbGetRaw(MATERIAL_MASTER_KEY)) || {};
   delete materials[window.activeMaterialCode];
   await idbSet(MATERIAL_MASTER_KEY, materials);
 
   window.activeMaterialCode = '';
+  triggerAutoPushToGas();
   await updateMaterialMasterDropdowns(false);
   renderMaterialEditorPanel();
   drawMaterialCanvas();
@@ -815,13 +824,14 @@ function renderMaterialEditorPanel() {
 }
 
 async function updateMaterialThreshold(val) {
-  const materials = (await idbGet(MATERIAL_MASTER_KEY)) || {};
+  const materials = (await idbGetRaw(MATERIAL_MASTER_KEY)) || {};
   const mat = materials[window.activeMaterialCode];
   if (!mat) return;
   mat.bakeryThreshold = Math.max(50, Math.min(99, parseInt(val, 10) || 80));
   mat.updatedAt = new Date().toLocaleString('ja-JP');
   await idbSet(MATERIAL_MASTER_KEY, materials);
   window.materialMastersCache = materials;
+  triggerAutoPushToGas();
   await updateMaterialMasterDropdowns(false);
 }
 
@@ -829,7 +839,7 @@ async function captureMaterialMasterSample() {
   if (!isCamRunning) return alert('先に「📷 材料撮影用カメラ起動」を押してください');
   if (!window.activeMaterialCode) return alert('材料品番を選択してください');
 
-  const materials = (await idbGet(MATERIAL_MASTER_KEY)) || {};
+  const materials = (await idbGetRaw(MATERIAL_MASTER_KEY)) || {};
   const mat = materials[window.activeMaterialCode];
   if (!mat) return;
 
@@ -848,6 +858,7 @@ async function captureMaterialMasterSample() {
   await idbSet(MATERIAL_MASTER_KEY, materials);
   window.materialMastersCache = materials;
   playBuzzerPattern('OK');
+  triggerAutoPushToGas();
   await updateMaterialMasterDropdowns(false);
   renderMaterialEditorPanel();
   drawMaterialCanvas();
@@ -857,7 +868,7 @@ async function updateMaterialGhostImageOnly() {
   if (!isCamRunning) return alert('先に「📷 材料撮影用カメラ起動」を押してください');
   if (!window.activeMaterialCode) return alert('材料品番を選択してください');
 
-  const materials = (await idbGet(MATERIAL_MASTER_KEY)) || {};
+  const materials = (await idbGetRaw(MATERIAL_MASTER_KEY)) || {};
   const mat = materials[window.activeMaterialCode];
   if (!mat) return;
 
@@ -868,6 +879,7 @@ async function updateMaterialGhostImageOnly() {
     await idbSet(MATERIAL_MASTER_KEY, materials);
     window.materialMastersCache = materials;
     playBuzzerPattern('OK');
+    triggerAutoPushToGas();
     await updateMaterialMasterDropdowns(false);
     renderMaterialEditorPanel();
     drawMaterialCanvas();
@@ -878,7 +890,7 @@ async function clearMaterialMasterSamples() {
   if (!window.activeMaterialCode) return;
   if (!confirm(`材料マスター [ ${window.activeMaterialCode} ] の良品学習データとシルエット画像をすべてクリアしますか？`)) return;
 
-  const materials = (await idbGet(MATERIAL_MASTER_KEY)) || {};
+  const materials = (await idbGetRaw(MATERIAL_MASTER_KEY)) || {};
   const mat = materials[window.activeMaterialCode];
   if (!mat) return;
   mat.bakerySamples = [];
@@ -887,6 +899,7 @@ async function clearMaterialMasterSamples() {
 
   await idbSet(MATERIAL_MASTER_KEY, materials);
   window.materialMastersCache = materials;
+  triggerAutoPushToGas();
   await updateMaterialMasterDropdowns(false);
   renderMaterialEditorPanel();
   drawMaterialCanvas();
@@ -1022,8 +1035,8 @@ async function clearAdminPartSearch() {
 }
 
 async function updateProfileDropdowns(fromSearchInput = false) {
-  const stored = (await idbGet(STORAGE_KEY)) || {};
-  const materials = (await idbGet(MATERIAL_MASTER_KEY)) || {};
+  const stored = (await idbGetRaw(STORAGE_KEY)) || {};
+  const materials = (await idbGetRaw(MATERIAL_MASTER_KEY)) || {};
   window.materialMastersCache = materials;
 
   const allKeys = Object.keys(stored).sort();
@@ -1092,7 +1105,7 @@ async function createOrSwitchAdminProfile() {
   blurActiveInput();
   const name = normalizeCodeString(document.getElementById('txtNewProfileName').value);
   if (!name) return alert('品番名を入力してください');
-  const stored = (await idbGet(STORAGE_KEY)) || {};
+  const stored = (await idbGetRaw(STORAGE_KEY)) || {};
   if (!stored[name]) {
     stored[name] = {
       stepsData: [{
@@ -1110,6 +1123,7 @@ async function createOrSwitchAdminProfile() {
       }]
     };
     await idbSet(STORAGE_KEY, stored);
+    triggerAutoPushToGas();
   }
   document.getElementById('txtNewProfileName').value = '';
   await clearAdminPartSearch();
@@ -1119,7 +1133,7 @@ async function createOrSwitchAdminProfile() {
 async function loadAdminProfile(partNo) {
   blurActiveInput();
   if (!partNo) return;
-  const stored = (await idbGet(STORAGE_KEY)) || {};
+  const stored = (await idbGetRaw(STORAGE_KEY)) || {};
   if (!stored[partNo]) return;
   window.adminActivePart = partNo;
   window.adminStepsData = stored[partNo].stepsData || [];
@@ -1131,9 +1145,10 @@ async function loadAdminProfile(partNo) {
 
 async function autoSaveAdminProfile() {
   if (!window.adminActivePart) return;
-  const stored = (await idbGet(STORAGE_KEY)) || {};
+  const stored = (await idbGetRaw(STORAGE_KEY)) || {};
   stored[window.adminActivePart] = { stepsData: window.adminStepsData };
   await idbSet(STORAGE_KEY, stored);
+  triggerAutoPushToGas();
   await updateProfileDropdowns(false);
 }
 
@@ -1148,11 +1163,12 @@ async function deleteAdminProfile() {
   blurActiveInput();
   if (!window.adminActivePart) return;
   if (!confirm(`品番 [ ${window.adminActivePart} ] を削除しますか？`)) return;
-  const stored = (await idbGet(STORAGE_KEY)) || {};
+  const stored = (await idbGetRaw(STORAGE_KEY)) || {};
   delete stored[window.adminActivePart];
   await idbSet(STORAGE_KEY, stored);
   window.adminActivePart = '';
   window.adminStepsData = [];
+  triggerAutoPushToGas();
   await updateProfileDropdowns(false);
   renderAdminStepsList();
 }
@@ -1463,11 +1479,11 @@ async function captureExpectedOcrFromCam(idx) {
   drawAdminCanvas();
 }
 
-// JSONバックアップ（シルエット画像・材料マスター・設定も一括で書き出し・復元）
+// JSONバックアップ（生データ取得を使用）
 async function exportAllProfilesJson() {
   const data = {
-    profiles: (await idbGet(STORAGE_KEY)) || {},
-    materialMasters: (await idbGet(MATERIAL_MASTER_KEY)) || {},
+    profiles: (await idbGetRaw(STORAGE_KEY)) || {},
+    materialMasters: (await idbGetRaw(MATERIAL_MASTER_KEY)) || {},
     csvTableA,
     csvTableB,
     qrRangeConfig,
@@ -1496,6 +1512,7 @@ function importAllProfilesJson(e) {
       if (obj.csvTableB) { csvTableB = obj.csvTableB; await idbSet(TABLE_B_KEY, csvTableB); }
       if (obj.qrRangeConfig) { qrRangeConfig = obj.qrRangeConfig; localStorage.setItem(QR_CONFIG_KEY, JSON.stringify(qrRangeConfig)); }
       if (obj.audioConfig) { audioConfig = obj.audioConfig; localStorage.setItem(AUDIO_CONFIG_KEY, JSON.stringify(audioConfig)); applyAudioConfigToUI(); }
+      triggerAutoPushToGas();
       await updateProfileDropdowns(false);
       await updateMaterialMasterDropdowns(false);
       alert('JSON設定データ（製品ステップ＆材料マスター含む）を復元しました。');
