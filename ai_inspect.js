@@ -1,5 +1,5 @@
 // =========================================================
-// ai_inspect.js : パン屋AI(中心化ブレンド類似度＋安全マージン比較)・バーコード・OCR検査
+// ai_inspect.js : パン屋AI(自動次元互換・中心化ブレンド類似度・安全マージン比較)・バーコード・OCR検査
 // =========================================================
 window.currentInspectPart = '';
 window.currentSteps = [];
@@ -12,9 +12,14 @@ let aiModelInitPromise = null;
 
 // 半透明シルエット画像のメモリキャッシュ（DataURL -> Imageオブジェクト）
 const ghostImageObjCache = {};
+// シルエット画像から動的に抽出した特徴ベクトルのキャッシュ
+const ghostFeatureCache1280 = {};
+const ghostFeatureCache48 = {};
 
-async function initAI() {
-  if (aiModelInitPromise) return aiModelInitPromise;
+async function initAI(forceRetry = false) {
+  if (mobilenetModel) return;
+  if (aiModelInitPromise && !forceRetry) return aiModelInitPromise;
+
   aiModelInitPromise = (async () => {
     const badge = document.getElementById('aiLiveBadge');
     if (badge) {
@@ -25,13 +30,14 @@ async function initAI() {
     loadQuaggaScript();
 
     let retry = 0;
-    while ((typeof tf === 'undefined' || typeof mobilenet === 'undefined') && retry < 20) {
+    while ((typeof tf === 'undefined' || typeof mobilenet === 'undefined') && retry < 30) {
       await new Promise(r => setTimeout(r, 500));
       retry++;
     }
     if (typeof tf === 'undefined' || typeof mobilenet === 'undefined') {
+      aiModelInitPromise = null;
       if (badge) {
-        badge.textContent = 'AIオフライン (色・形状特徴フォールバック動作)';
+        badge.textContent = 'AIオフライン (画像シルエット・色形状モードで動作中)';
         badge.style.color = '#ff9800';
       }
       return;
@@ -44,6 +50,7 @@ async function initAI() {
         badge.style.color = '#00e676';
       }
     } catch (e) {
+      aiModelInitPromise = null;
       if (badge) {
         badge.textContent = '🥐 パン屋AI (高速特徴モード) 準備完了';
         badge.style.color = '#00e676';
@@ -98,6 +105,23 @@ function getCachedGhostImageElement(dataUrl) {
     ghostImageObjCache[dataUrl] = img;
   }
   return ghostImageObjCache[dataUrl];
+}
+
+function loadImageAsync(dataUrl) {
+  return new Promise((resolve) => {
+    if (!dataUrl) return resolve(null);
+    const cached = getCachedGhostImageElement(dataUrl);
+    if (cached && cached.complete && cached.naturalWidth > 0) {
+      return resolve(cached);
+    }
+    const img = new Image();
+    img.onload = () => {
+      ghostImageObjCache[dataUrl] = img;
+      resolve(img);
+    };
+    img.onerror = () => resolve(null);
+    img.src = dataUrl;
+  });
 }
 
 function getScaledStepCoords(step, targetW, targetH) {
@@ -190,20 +214,36 @@ function drawSmartRoiOverlay(ctx, canvasW, canvasH, step, labelPrefix) {
   ctx.fillText(labelText, boxX + 8, boxY + 18);
 }
 
-// AI特徴抽出（読込完了を待機し、生のカメラ映像から抽出）
-async function extractBakeryFeatureVector(sourceCanvas) {
-  if (!mobilenetModel && aiModelInitPromise) {
-    await Promise.race([aiModelInitPromise, new Promise(r => setTimeout(r, 3000))]);
-  }
+// 48次元カラー・輝度特徴量の抽出（オフライン時や旧データ互換用）
+function extractColorHistogram48FromElement(el) {
+  const srcW = el.naturalWidth || el.videoWidth || el.width || 640;
+  const srcH = el.naturalHeight || el.videoHeight || el.height || 480;
+  reusableCropCanvas.width = 224;
+  reusableCropCanvas.height = 224;
+  reusableCropCtx.drawImage(el, 0, 0, srcW, srcH, 0, 0, 224, 224);
 
-  const videoEl = document.getElementById('videoSource');
-  const rawSource = (videoEl && isCamRunning && videoEl.readyState >= 2) ? videoEl : sourceCanvas;
-  const srcW = rawSource.videoWidth || rawSource.width || 640;
-  const srcH = rawSource.videoHeight || rawSource.height || 480;
+  const imgData = reusableCropCtx.getImageData(0, 0, 224, 224).data;
+  const vec = new Array(48).fill(0);
+  for (let i = 0; i < imgData.length; i += 16) {
+    vec[(imgData[i] >> 4)]++;
+    vec[16 + (imgData[i + 1] >> 4)]++;
+    vec[32 + (imgData[i + 2] >> 4)]++;
+  }
+  const norm = Math.hypot(...vec) || 1;
+  return vec.map(v => v / norm);
+}
+
+// 任意の画像/Video要素からAI特徴量を抽出
+async function extractVectorFromElement(el) {
+  if (!mobilenetModel) {
+    await initAI(true);
+  }
+  const srcW = el.naturalWidth || el.videoWidth || el.width || 640;
+  const srcH = el.naturalHeight || el.videoHeight || el.height || 480;
 
   reusableCropCanvas.width = 224;
   reusableCropCanvas.height = 224;
-  reusableCropCtx.drawImage(rawSource, 0, 0, srcW, srcH, 0, 0, 224, 224);
+  reusableCropCtx.drawImage(el, 0, 0, srcW, srcH, 0, 0, 224, 224);
 
   if (mobilenetModel && typeof tf !== 'undefined') {
     return tf.tidy(() => {
@@ -217,20 +257,49 @@ async function extractBakeryFeatureVector(sourceCanvas) {
       return vec;
     });
   }
-
-  const imgData = reusableCropCtx.getImageData(0, 0, 224, 224).data;
-  const vec = new Array(48).fill(0);
-  for (let i = 0; i < imgData.length; i += 16) {
-    vec[(imgData[i] >> 4)]++;
-    vec[16 + (imgData[i + 1] >> 4)]++;
-    vec[32 + (imgData[i + 2] >> 4)]++;
-  }
-  const norm = Math.hypot(...vec) || 1;
-  return vec.map(v => v / norm);
+  return extractColorHistogram48FromElement(el);
 }
 
-// ★ 改良版コサイン類似度：素の類似度 + 中心化(平均値減算)類似度のブレンドにより
-//    同じ背景上の別部品のスコア水増しを抑え、良品と異品の点差を明確化 ★
+// カメラ生映像からのAI特徴抽出
+async function extractBakeryFeatureVector(sourceCanvas) {
+  const videoEl = document.getElementById('videoSource');
+  const rawSource = (videoEl && isCamRunning && videoEl.readyState >= 2) ? videoEl : sourceCanvas;
+  return await extractVectorFromElement(rawSource);
+}
+
+// ★ 次元不一致を自動吸収する互換サンプルリスト生成ヘルパー ★
+// 既存マスターデータを一切削除せず、次元が違う場合のみシルエット画像から自動補完する
+async function getCompatibleSamplesForMaterial(samples, ghostImageUrl, targetDim) {
+  const validDirect = (samples || []).filter(s => Array.isArray(s) && s.length === targetDim);
+  if (validDirect.length > 0) return validDirect;
+
+  // 保存済みサンプルと現在の推論次元が異なる場合、シルエット画像(ghostImage)から自動生成
+  if (ghostImageUrl) {
+    if (targetDim > 48 && ghostFeatureCache1280[ghostImageUrl]) {
+      return [ghostFeatureCache1280[ghostImageUrl]];
+    }
+    if (targetDim === 48 && ghostFeatureCache48[ghostImageUrl]) {
+      return [ghostFeatureCache48[ghostImageUrl]];
+    }
+    const imgEl = await loadImageAsync(ghostImageUrl);
+    if (imgEl) {
+      if (targetDim > 48 && mobilenetModel) {
+        const vec1280 = await extractVectorFromElement(imgEl);
+        if (vec1280 && vec1280.length === targetDim) {
+          ghostFeatureCache1280[ghostImageUrl] = vec1280;
+          return [vec1280];
+        }
+      } else {
+        const vec48 = extractColorHistogram48FromElement(imgEl);
+        ghostFeatureCache48[ghostImageUrl] = vec48;
+        return [vec48];
+      }
+    }
+  }
+  return [];
+}
+
+// 改良版コサイン類似度：素の類似度 + 中心化(平均値減算)類似度のブレンド
 function computeCosineSimilarity(a, b) {
   if (!a || !b || a.length !== b.length || a.length === 0) return 0;
   const n = a.length;
@@ -262,52 +331,52 @@ function computeCosineSimilarity(a, b) {
   const rawSim = Math.max(0, dotRaw / ((Math.sqrt(naRaw) * Math.sqrt(nbRaw)) || 1));
   const centSim = Math.max(0, dotCent / ((Math.sqrt(naCent) * Math.sqrt(nbCent)) || 1));
 
-  // 素の類似度(50%) + 中心化類似度(50%) のハイブリッドスコア
   return rawSim * 0.5 + centSim * 0.5;
 }
 
 // =========================================================
-// 🚀 パン屋AI：3連写ブレ吸収 ＋ 安全マージン付きライバル相対比較エンジン
+// 🚀 パン屋AI：3連写ブレ吸収 ＋ 自動次元互換 ＋ 安全マージンライバル比較
 // =========================================================
 async function evaluateBakeryWithBurstAndRivals(sourceCanvas, targetSamples, targetThreshold, targetMatKey, allMaterialsMap) {
   const burstCount = 3;
   const burstDelayMs = 140;
 
+  const targetMatObj = (targetMatKey && allMaterialsMap) ? allMaterialsMap[targetMatKey] : null;
+  const targetGhostUrl = targetMatObj ? targetMatObj.ghostImage : null;
+
   let bestTargetSim = -1;
   let bestFrameFeat = null;
-  let hasDimMismatch = false;
 
   for (let b = 0; b < burstCount; b++) {
     if (b > 0) {
       await new Promise(r => setTimeout(r, burstDelayMs));
     }
     const feat = await extractBakeryFeatureVector(sourceCanvas);
+    const compatibleTargetSamples = await getCompatibleSamplesForMaterial(targetSamples, targetGhostUrl, feat.length);
+
+    // もしサンプルが48次元のみでAIが1280次元の場合は、現在映像の48次元でも比較可能にする
+    let evalSamples = compatibleTargetSamples;
+    let evalFeat = feat;
+    if (evalSamples.length === 0 && (targetSamples || []).some(s => Array.isArray(s) && s.length === 48)) {
+      const videoEl = document.getElementById('videoSource');
+      const rawSource = (videoEl && isCamRunning && videoEl.readyState >= 2) ? videoEl : sourceCanvas;
+      evalFeat = extractColorHistogram48FromElement(rawSource);
+      evalSamples = targetSamples.filter(s => Array.isArray(s) && s.length === 48);
+    }
+
     let frameSim = 0;
-    targetSamples.forEach(sample => {
-      if (sample && feat && sample.length !== feat.length) {
-        hasDimMismatch = true;
-      }
-      const sim = computeCosineSimilarity(feat, sample) * 100;
+    evalSamples.forEach(sample => {
+      const sim = computeCosineSimilarity(evalFeat, sample) * 100;
       if (sim > frameSim) frameSim = sim;
     });
 
     if (frameSim > bestTargetSim) {
       bestTargetSim = frameSim;
-      bestFrameFeat = feat;
+      bestFrameFeat = evalFeat;
     }
   }
 
-  if (bestTargetSim <= 0 && hasDimMismatch) {
-    return {
-      passed: false,
-      targetScore: 0,
-      rivalCode: null,
-      rivalScore: null,
-      reason: '⚠️ AIエンジンの読込完了前に登録された古い形式のサンプルデータが含まれています。\n材料マスター画面で「🗑️ 良品データを全クリア」のうえ、再度良品を撮影してください。'
-    };
-  }
-
-  const targetScore = Math.round(bestTargetSim);
+  const targetScore = Math.max(0, Math.round(bestTargetSim));
 
   let bestRivalCode = null;
   let bestRivalMemo = '';
@@ -322,8 +391,15 @@ async function evaluateBakeryWithBurstAndRivals(sourceCanvas, targetSamples, tar
       const rivalMat = allMaterialsMap[k];
       if (!rivalMat || !rivalMat.bakerySamples || rivalMat.bakerySamples.length === 0) continue;
 
+      const rivalSamples = await getCompatibleSamplesForMaterial(
+        rivalMat.bakerySamples,
+        rivalMat.ghostImage,
+        bestFrameFeat.length
+      );
+      if (rivalSamples.length === 0) continue;
+
       let rSim = 0;
-      rivalMat.bakerySamples.forEach(sample => {
+      rivalSamples.forEach(sample => {
         const s = computeCosineSimilarity(bestFrameFeat, sample) * 100;
         if (s > rSim) rSim = s;
       });
@@ -339,7 +415,6 @@ async function evaluateBakeryWithBurstAndRivals(sourceCanvas, targetSamples, tar
   const rivalScore = bestRivalCode ? Math.round(bestRivalSim) : null;
   const marginDiff = rivalScore !== null ? (targetScore - rivalScore) : null;
 
-  // ★ 安全マージン（+4%）判定：他材料が一定以上のスコア(65%以上)で、かつ対象材料より4%以上明確に高い場合のみ異品としてブロック ★
   const rivalMinConfidence = Math.max(65, targetThreshold - 10);
   if (rivalScore !== null && rivalScore >= rivalMinConfidence && rivalScore > targetScore + 3) {
     const rivalLabel = bestRivalMemo ? `${bestRivalCode} (${bestRivalMemo})` : bestRivalCode;
