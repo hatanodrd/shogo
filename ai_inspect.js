@@ -1,5 +1,5 @@
 // =========================================================
-// ai_inspect.js : パン屋AI(半透明シルエット＋3連写＋ライバル比較)・バーコード・OCR検査
+// ai_inspect.js : パン屋AI(中心化ブレンド類似度＋安全マージン比較)・バーコード・OCR検査
 // =========================================================
 window.currentInspectPart = '';
 window.currentSteps = [];
@@ -8,37 +8,49 @@ let isInspectingStep = false;
 window.isChatteringCooldown = false;
 let cooldownInterval = null;
 let fallbackHtml5Scanner = null;
+let aiModelInitPromise = null;
 
 // 半透明シルエット画像のメモリキャッシュ（DataURL -> Imageオブジェクト）
 const ghostImageObjCache = {};
 
 async function initAI() {
-  const badge = document.getElementById('aiLiveBadge');
-  if (!badge) return;
-  badge.textContent = 'AI・バーコード・OCRエンジン読込中...';
-  badge.style.color = '#ffeb3b';
+  if (aiModelInitPromise) return aiModelInitPromise;
+  aiModelInitPromise = (async () => {
+    const badge = document.getElementById('aiLiveBadge');
+    if (badge) {
+      badge.textContent = 'AI・バーコード・OCRエンジン読込中...';
+      badge.style.color = '#ffeb3b';
+    }
 
-  loadQuaggaScript();
+    loadQuaggaScript();
 
-  let retry = 0;
-  while ((typeof tf === 'undefined' || typeof mobilenet === 'undefined') && retry < 20) {
-    await new Promise(r => setTimeout(r, 500));
-    retry++;
-  }
-  if (typeof tf === 'undefined' || typeof mobilenet === 'undefined') {
-    badge.textContent = 'AIオフライン (色・形状特徴フォールバック動作)';
-    badge.style.color = '#ff9800';
-    return;
-  }
-  try {
-    await tf.ready();
-    mobilenetModel = await mobilenet.load({ version: 2, alpha: 1.0 });
-    badge.textContent = '🥐 パン屋AI(👻シルエット対応) ＆ 🎯コード/OCR 準備完了';
-    badge.style.color = '#00e676';
-  } catch (e) {
-    badge.textContent = '🥐 パン屋AI (高速特徴モード) 準備完了';
-    badge.style.color = '#00e676';
-  }
+    let retry = 0;
+    while ((typeof tf === 'undefined' || typeof mobilenet === 'undefined') && retry < 20) {
+      await new Promise(r => setTimeout(r, 500));
+      retry++;
+    }
+    if (typeof tf === 'undefined' || typeof mobilenet === 'undefined') {
+      if (badge) {
+        badge.textContent = 'AIオフライン (色・形状特徴フォールバック動作)';
+        badge.style.color = '#ff9800';
+      }
+      return;
+    }
+    try {
+      await tf.ready();
+      mobilenetModel = await mobilenet.load({ version: 2, alpha: 1.0 });
+      if (badge) {
+        badge.textContent = '🥐 パン屋AI(👻シルエット対応) ＆ 🎯コード/OCR 準備完了';
+        badge.style.color = '#00e676';
+      }
+    } catch (e) {
+      if (badge) {
+        badge.textContent = '🥐 パン屋AI (高速特徴モード) 準備完了';
+        badge.style.color = '#00e676';
+      }
+    }
+  })();
+  return aiModelInitPromise;
 }
 
 function loadQuaggaScript() {
@@ -114,7 +126,6 @@ function getScaledStepCoords(step, targetW, targetH) {
   return { x: 0, y: 0, w: targetW, h: targetH };
 }
 
-// ★ 全画面共通の枠・半透明シルエット描画関数（app_admin.jsでの重複上書きを廃止し直接定義） ★
 function drawSmartRoiOverlay(ctx, canvasW, canvasH, step, labelPrefix) {
   if (!step) return;
   const coords = getScaledStepCoords(step, canvasW, canvasH);
@@ -123,7 +134,6 @@ function drawSmartRoiOverlay(ctx, canvasW, canvasH, step, labelPrefix) {
   const isBakery = step.type === 'BAKERY';
   const color = isBarcode ? '#00e676' : (isOcr ? '#00e5ff' : '#ab47bc');
 
-  // パン屋AI検査時、設定で半透明シルエットがONならカメラ画面上に重ねて描画
   let isGhostDrawn = false;
   if (isBakery && typeof ghostGuideConfig !== 'undefined' && ghostGuideConfig.enabled) {
     const ghostUrl = resolveStepGhostDataUrl(step);
@@ -180,8 +190,12 @@ function drawSmartRoiOverlay(ctx, canvasW, canvasH, step, labelPrefix) {
   ctx.fillText(labelText, boxX + 8, boxY + 18);
 }
 
-// AI特徴抽出時は、キャンバス上の半透明シルエットが混ざらないよう生のカメラ映像(videoSource)から直接抽出する
+// AI特徴抽出（読込完了を待機し、生のカメラ映像から抽出）
 async function extractBakeryFeatureVector(sourceCanvas) {
+  if (!mobilenetModel && aiModelInitPromise) {
+    await Promise.race([aiModelInitPromise, new Promise(r => setTimeout(r, 3000))]);
+  }
+
   const videoEl = document.getElementById('videoSource');
   const rawSource = (videoEl && isCamRunning && videoEl.readyState >= 2) ? videoEl : sourceCanvas;
   const srcW = rawSource.videoWidth || rawSource.width || 640;
@@ -215,19 +229,45 @@ async function extractBakeryFeatureVector(sourceCanvas) {
   return vec.map(v => v / norm);
 }
 
+// ★ 改良版コサイン類似度：素の類似度 + 中心化(平均値減算)類似度のブレンドにより
+//    同じ背景上の別部品のスコア水増しを抑え、良品と異品の点差を明確化 ★
 function computeCosineSimilarity(a, b) {
-  if (!a || !b || a.length !== b.length) return 0;
-  let dot = 0, na = 0, nb = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    na += a[i] * a[i];
-    nb += b[i] * b[i];
+  if (!a || !b || a.length !== b.length || a.length === 0) return 0;
+  const n = a.length;
+  let sumA = 0, sumB = 0;
+  for (let i = 0; i < n; i++) {
+    sumA += a[i];
+    sumB += b[i];
   }
-  return dot / ((Math.sqrt(na) * Math.sqrt(nb)) || 1);
+  const meanA = sumA / n;
+  const meanB = sumB / n;
+
+  let dotRaw = 0, naRaw = 0, nbRaw = 0;
+  let dotCent = 0, naCent = 0, nbCent = 0;
+
+  for (let i = 0; i < n; i++) {
+    const va = a[i];
+    const vb = b[i];
+    dotRaw += va * vb;
+    naRaw += va * va;
+    nbRaw += vb * vb;
+
+    const ca = va - meanA;
+    const cb = vb - meanB;
+    dotCent += ca * cb;
+    naCent += ca * ca;
+    nbCent += cb * cb;
+  }
+
+  const rawSim = Math.max(0, dotRaw / ((Math.sqrt(naRaw) * Math.sqrt(nbRaw)) || 1));
+  const centSim = Math.max(0, dotCent / ((Math.sqrt(naCent) * Math.sqrt(nbCent)) || 1));
+
+  // 素の類似度(50%) + 中心化類似度(50%) のハイブリッドスコア
+  return rawSim * 0.5 + centSim * 0.5;
 }
 
 // =========================================================
-// 🚀 パン屋AI：3連写ブレ吸収 ＋ 他材料マスターとの相対比較エンジン
+// 🚀 パン屋AI：3連写ブレ吸収 ＋ 安全マージン付きライバル相対比較エンジン
 // =========================================================
 async function evaluateBakeryWithBurstAndRivals(sourceCanvas, targetSamples, targetThreshold, targetMatKey, allMaterialsMap) {
   const burstCount = 3;
@@ -235,6 +275,7 @@ async function evaluateBakeryWithBurstAndRivals(sourceCanvas, targetSamples, tar
 
   let bestTargetSim = -1;
   let bestFrameFeat = null;
+  let hasDimMismatch = false;
 
   for (let b = 0; b < burstCount; b++) {
     if (b > 0) {
@@ -243,6 +284,9 @@ async function evaluateBakeryWithBurstAndRivals(sourceCanvas, targetSamples, tar
     const feat = await extractBakeryFeatureVector(sourceCanvas);
     let frameSim = 0;
     targetSamples.forEach(sample => {
+      if (sample && feat && sample.length !== feat.length) {
+        hasDimMismatch = true;
+      }
       const sim = computeCosineSimilarity(feat, sample) * 100;
       if (sim > frameSim) frameSim = sim;
     });
@@ -251,6 +295,16 @@ async function evaluateBakeryWithBurstAndRivals(sourceCanvas, targetSamples, tar
       bestTargetSim = frameSim;
       bestFrameFeat = feat;
     }
+  }
+
+  if (bestTargetSim <= 0 && hasDimMismatch) {
+    return {
+      passed: false,
+      targetScore: 0,
+      rivalCode: null,
+      rivalScore: null,
+      reason: '⚠️ AIエンジンの読込完了前に登録された古い形式のサンプルデータが含まれています。\n材料マスター画面で「🗑️ 良品データを全クリア」のうえ、再度良品を撮影してください。'
+    };
   }
 
   const targetScore = Math.round(bestTargetSim);
@@ -285,7 +339,9 @@ async function evaluateBakeryWithBurstAndRivals(sourceCanvas, targetSamples, tar
   const rivalScore = bestRivalCode ? Math.round(bestRivalSim) : null;
   const marginDiff = rivalScore !== null ? (targetScore - rivalScore) : null;
 
-  if (rivalScore !== null && rivalScore >= targetScore) {
+  // ★ 安全マージン（+4%）判定：他材料が一定以上のスコア(65%以上)で、かつ対象材料より4%以上明確に高い場合のみ異品としてブロック ★
+  const rivalMinConfidence = Math.max(65, targetThreshold - 10);
+  if (rivalScore !== null && rivalScore >= rivalMinConfidence && rivalScore > targetScore + 3) {
     const rivalLabel = bestRivalMemo ? `${bestRivalCode} (${bestRivalMemo})` : bestRivalCode;
     return {
       passed: false,
@@ -293,7 +349,7 @@ async function evaluateBakeryWithBurstAndRivals(sourceCanvas, targetSamples, tar
       rivalCode: bestRivalCode,
       rivalLabel,
       rivalScore,
-      reason: `⚠️ 類似品（異品）の可能性があります！\n・対象材料の一致率: ${targetScore}%\n・他材料 [${rivalLabel}] の一致率: ${rivalScore}% (ライバル品の方が高スコア)`
+      reason: `⚠️ 類似品（異品）の可能性があります！\n・対象材料の一致率: ${targetScore}%\n・他材料 [${rivalLabel}] の一致率: ${rivalScore}% (ライバル品が +${rivalScore - targetScore}% 高スコア)`
     };
   }
 
@@ -305,13 +361,13 @@ async function evaluateBakeryWithBurstAndRivals(sourceCanvas, targetSamples, tar
       rivalScore,
       marginDiff,
       detail: rivalScore !== null
-        ? `3連写最高:${targetScore}% / 次点[${bestRivalCode}]:${rivalScore}% (差+${marginDiff}%)`
+        ? `3連写最高:${targetScore}% / 次点[${bestRivalCode}]:${rivalScore}% (差${marginDiff >= 0 ? '+' : ''}${marginDiff}%)`
         : `3連写最高:${targetScore}%`
     };
   }
 
   const relativeGraceMin = Math.max(50, targetThreshold - 5);
-  if (rivalScore !== null && targetScore >= relativeGraceMin && marginDiff >= 3) {
+  if (rivalScore !== null && targetScore >= relativeGraceMin && marginDiff >= 4) {
     return {
       passed: true,
       targetScore,
@@ -640,7 +696,7 @@ async function executeCurrentStepInspection() {
       btnExec.textContent = '📸 3連写＆他材料比較中... (そのままキープ)';
       btnExec.disabled = true;
 
-      const materials = (await idbGet(MATERIAL_MASTER_KEY)) || {};
+      const materials = (typeof idbGetRaw === 'function' ? await idbGetRaw(MATERIAL_MASTER_KEY) : await idbGet(MATERIAL_MASTER_KEY)) || {};
       window.materialMastersCache = materials;
 
       let targetSamples = step.bakerySamples || [];
