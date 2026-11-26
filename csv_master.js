@@ -1,6 +1,30 @@
 // =========================================================
-// csv_master.js : Aの表・Bの表 CSV解析・IndexedDB保存・突合処理
+// csv_master.js : Aの表・Bの表 CSV解析・IndexedDB保存・自動突合・リセット処理
 // =========================================================
+
+// IndexedDB生データ取得ヘルパー（config_audio.jsのidbGetRaw/idbGetに対応）
+async function readMasterStoreRaw(key) {
+  if (typeof idbGetRaw === 'function') return await idbGetRaw(key);
+  if (typeof idbGet === 'function') return await idbGet(key);
+  return JSON.parse(localStorage.getItem(key) || 'null');
+}
+
+async function writeMasterStore(key, val) {
+  if (typeof idbSet === 'function') {
+    await idbSet(key, val);
+  } else {
+    localStorage.setItem(key, JSON.stringify(val));
+  }
+}
+
+async function removeMasterStore(key) {
+  if (typeof idbDelete === 'function') {
+    await idbDelete(key);
+  } else {
+    localStorage.removeItem(key);
+  }
+}
+
 function parseCsvLine(line) {
   const res = [];
   let cur = '', inQ = false;
@@ -21,6 +45,7 @@ function parseCsvLine(line) {
 }
 
 function handleCsvFileSelect(event, tableType) {
+  blurActiveInput();
   const file = event.target.files[0];
   if (!file) return;
   const reader = new FileReader();
@@ -42,6 +67,7 @@ function handleCsvFileSelect(event, tableType) {
   reader.readAsArrayBuffer(file);
 }
 
+// Aの表：1行目見出しスキップ、A列(0)=品番、F列(5)=バーコード値（6列未満ならB列(1)）
 async function parseTableACsvText(text) {
   const lines = text.split(/\r\n|\n|\r/);
   const mapA = {};
@@ -56,9 +82,10 @@ async function parseTableACsvText(text) {
     mapA[partNo].push(codeVal);
   }
   csvTableA = mapA;
-  await idbSet(TABLE_A_KEY, csvTableA);
+  await writeMasterStore(TABLE_A_KEY, csvTableA);
 }
 
+// Bの表：1行目見出しスキップ、A列(0)=品番、B列(1)=外箱、C列(2)=内箱、D列(3)=小箱
 async function parseTableBCsvText(text) {
   const lines = text.split(/\r\n|\n|\r/);
   const mapB = {};
@@ -75,31 +102,67 @@ async function parseTableBCsvText(text) {
     };
   }
   csvTableB = mapB;
-  await idbSet(TABLE_B_KEY, csvTableB);
+  await writeMasterStore(TABLE_B_KEY, csvTableB);
 }
 
+// Bの表のセル値が「照合対象（有効なラベル参照先）」かどうかを判定
+function isValidBoxRef(refStr) {
+  const s = normalizeCodeString(refStr || '');
+  if (!s) return false;
+  const ignoreTokens = ['-', '―', '－', 'ー', 'なし', '無', '不要', '0', 'NONE', 'N/A', 'NA', '×'];
+  return !ignoreTokens.includes(s);
+}
+
+// Aの表とBの表から品番キーを柔軟に検索（O/0や1/I揺れにも対応）
+function findRecordByPartKey(mapObj, partNo) {
+  if (!mapObj || !partNo) return null;
+  if (mapObj[partNo]) return mapObj[partNo];
+  if (typeof unifyAmbiguousCharsKey === 'function') {
+    const targetUni = unifyAmbiguousCharsKey(partNo);
+    const keys = Object.keys(mapObj);
+    for (let i = 0; i < keys.length; i++) {
+      if (unifyAmbiguousCharsKey(keys[i]) === targetUni) {
+        return mapObj[keys[i]];
+      }
+    }
+  }
+  return null;
+}
+
+// Aの表とBの表を突合して各品番の照合ステップをIndexedDBへ生成・保存
 async function processMasterCsvTables() {
-  const storedProfiles = (await idbGet(STORAGE_KEY)) || {};
+  // メモリ上のcsvTableA/Bが空の場合はIndexedDBから復元
+  if (!csvTableA || Object.keys(csvTableA).length === 0) {
+    csvTableA = (await readMasterStoreRaw(TABLE_A_KEY)) || {};
+  }
+  if (!csvTableB || Object.keys(csvTableB).length === 0) {
+    csvTableB = (await readMasterStoreRaw(TABLE_B_KEY)) || {};
+  }
+
+  const storedProfiles = (await readMasterStoreRaw(STORAGE_KEY)) || {};
   const allParts = new Set([
     ...Object.keys(csvTableA),
     ...Object.keys(csvTableB)
   ]);
 
   let updatedCount = 0;
+  let multiStepCount = 0;
 
   allParts.forEach(partNo => {
-    const rawCodes = csvTableA[partNo] || [];
+    const rawCodes = findRecordByPartKey(csvTableA, partNo) || [];
+    // Aの表は下の行から「外箱 ➔ 内箱 ➔ 小箱」の順なので反転させる
     const codesFromBottom = rawCodes.slice().reverse();
-    const bInfo = csvTableB[partNo];
+    const bInfo = findRecordByPartKey(csvTableB, partNo);
 
     let csvSteps = [];
 
     if (bInfo) {
+      // Bの表に該当品番がある場合：有効な箱（外箱・内箱・小箱）の列数ぶんステップを作成
       const activeBoxes = [
         { name: '外箱', ref: bInfo.outerRef },
         { name: '内箱', ref: bInfo.innerRef },
         { name: '小箱', ref: bInfo.smallRef }
-      ].filter(b => b.ref !== '');
+      ].filter(b => isValidBoxRef(b.ref));
 
       if (activeBoxes.length > 0 && codesFromBottom.length > 0) {
         const uniqueRefs = [];
@@ -108,12 +171,16 @@ async function processMasterCsvTables() {
         });
 
         if (codesFromBottom.length === activeBoxes.length) {
+          // 例：Bの表で2箱指定 ＆ Aの表も2行ある場合 ➔ それぞれ順に割り当て
           csvSteps = activeBoxes.map((b, idx) => buildCsvStepObj(b.name, codesFromBottom[idx], b.ref));
         } else if (codesFromBottom.length === uniqueRefs.length) {
+          // 例：Bの表で2箱指定（参照先名も別）＆ Aの表も同数ある場合
           const refCodeMap = {};
           uniqueRefs.forEach((rStr, idx) => { refCodeMap[rStr] = codesFromBottom[idx]; });
           csvSteps = activeBoxes.map(b => buildCsvStepObj(b.name, refCodeMap[b.ref], b.ref));
         } else if (codesFromBottom.length === 1) {
+          // 例：Bの表で「外箱・内箱」の2ステップ指定だが、Aの表は共通JAN1行のみの場合
+          // ➔ 同じJANコードで「Step1: 外箱」「Step2: 内箱」の2ステップを生成！
           csvSteps = activeBoxes.map(b => buildCsvStepObj(b.name, codesFromBottom[0], b.ref));
         } else {
           csvSteps = activeBoxes.map((b, idx) =>
@@ -122,32 +189,50 @@ async function processMasterCsvTables() {
         }
       }
     } else if (codesFromBottom.length > 0) {
+      // Bの表に未登録の品番はAの表の行数（最大3行：外箱➔内箱➔小箱）から自動生成
       const codes = codesFromBottom.slice(0, 3);
       csvSteps = codes.map((c, idx) => buildCsvStepObj(BOX_NAMES[idx] || `コード ${idx + 1}`, c, ''));
     }
 
+    // 手動追加した「🥐パン屋AI」「🔤OCR文字検査」「📷追加コード」は消さずに後ろへ保持
     const existingSteps = (storedProfiles[partNo] && storedProfiles[partNo].stepsData)
       ? storedProfiles[partNo].stepsData : [];
     const customSteps = existingSteps.filter(s => !s.fromCsv);
 
     if (csvSteps.length > 0 || customSteps.length > 0) {
-      storedProfiles[partNo] = {
-        stepsData: [...csvSteps, ...customSteps]
-      };
+      const mergedSteps = [...csvSteps, ...customSteps];
+      storedProfiles[partNo] = { stepsData: mergedSteps };
       updatedCount++;
+      if (mergedSteps.length >= 2) multiStepCount++;
     }
   });
 
   try {
-    await idbSet(STORAGE_KEY, storedProfiles);
-    await updateProfileDropdowns();
-    const firstPart = Array.from(allParts)[0];
-    if (firstPart && storedProfiles[firstPart]) {
-      await loadAdminProfile(firstPart);
+    await writeMasterStore(STORAGE_KEY, storedProfiles);
+    if (typeof updateProfileDropdowns === 'function') {
+      await updateProfileDropdowns(false);
     }
-    alert(`CSV連携更新完了！\n・連携品番数: ${updatedCount} 件\n・大容量IndexedDBへ正常に保存されました。`);
+    if (typeof triggerAutoPushToGas === 'function') {
+      triggerAutoPushToGas();
+    }
+
+    // 現在選択中の品番、または最初の複数ステップ品番をプレビュー表示
+    const targetPreviewPart = (window.adminActivePart && storedProfiles[window.adminActivePart])
+      ? window.adminActivePart
+      : Array.from(allParts).find(p => storedProfiles[p]?.stepsData?.length >= 2) || Array.from(allParts)[0];
+
+    if (targetPreviewPart && storedProfiles[targetPreviewPart] && typeof loadAdminProfile === 'function') {
+      await loadAdminProfile(targetPreviewPart);
+    }
+
+    alert(
+      `CSV連携更新完了！\n` +
+      `・連携品番数: ${updatedCount} 件（うち2ステップ以上: ${multiStepCount} 件）\n` +
+      `・Aの表: ${Object.keys(csvTableA).length} 品番 ／ Bの表: ${Object.keys(csvTableB).length} 品番\n` +
+      `※Bの表の「外箱・内箱・小箱」の指定に基づいて照合ステップを生成しました。`
+    );
   } catch (e) {
-    alert('保存処理に失敗しました: ' + e.message);
+    alert('データベース保存エラー: ' + e.message);
   }
 }
 
@@ -162,7 +247,9 @@ function buildCsvStepObj(boxName, codeVal, refText) {
     baseW: 640, baseH: 480,
     bakerySamples: [],
     bakeryThreshold: 80,
-    expectedBarcode: codeVal
+    expectedBarcode: codeVal,
+    expectedOcrText: '',
+    ocrMatchMode: 'EXACT'
   };
 }
 
@@ -171,15 +258,15 @@ async function resetCsvMasterData() {
   if (!confirm('読み込んだCSVデータ（Aの表・Bの表）をリセットしますか？')) return;
 
   const keepCustom = confirm(
-    '設定画面で手動追加した「🥐パン屋AI検査」や「📷追加コード」のステップは残しますか？\n\n' +
-    '・[OK] ＝ 手動追加したカメラ検査は残し、CSVの箱ステップのみ消去\n' +
+    '設定画面で手動追加した「🥐パン屋AI検査」や「🔤OCR文字検査」「📷追加コード」のステップは残しますか？\n\n' +
+    '・[OK] ＝ 手動追加した検査は残し、CSVの箱ステップのみ消去\n' +
     '・[キャンセル] ＝ すべての品番・ステップを完全に初期化'
   );
 
   csvTableA = {};
   csvTableB = {};
-  await idbDelete(TABLE_A_KEY);
-  await idbDelete(TABLE_B_KEY);
+  await removeMasterStore(TABLE_A_KEY);
+  await removeMasterStore(TABLE_B_KEY);
 
   const inputA = document.getElementById('fileCsvA');
   const inputB = document.getElementById('fileCsvB');
@@ -187,7 +274,7 @@ async function resetCsvMasterData() {
   if (inputB) inputB.value = '';
 
   if (keepCustom) {
-    const storedProfiles = (await idbGet(STORAGE_KEY)) || {};
+    const storedProfiles = (await readMasterStoreRaw(STORAGE_KEY)) || {};
     Object.keys(storedProfiles).forEach(partNo => {
       const customSteps = (storedProfiles[partNo].stepsData || []).filter(s => !s.fromCsv);
       if (customSteps.length > 0) {
@@ -196,15 +283,16 @@ async function resetCsvMasterData() {
         delete storedProfiles[partNo];
       }
     });
-    await idbSet(STORAGE_KEY, storedProfiles);
+    await writeMasterStore(STORAGE_KEY, storedProfiles);
   } else {
-    await idbDelete(STORAGE_KEY);
+    await removeMasterStore(STORAGE_KEY);
   }
 
   window.adminActivePart = '';
   window.adminStepsData = [];
-  await updateProfileDropdowns();
-  renderAdminStepsList();
-  drawAdminCanvas();
+  if (typeof triggerAutoPushToGas === 'function') triggerAutoPushToGas();
+  if (typeof updateProfileDropdowns === 'function') await updateProfileDropdowns(false);
+  if (typeof renderAdminStepsList === 'function') renderAdminStepsList();
+  if (typeof drawAdminCanvas === 'function') drawAdminCanvas();
   alert('CSVデータをリセットしました。');
 }
